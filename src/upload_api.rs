@@ -73,7 +73,7 @@ async fn _upload_video(title:&String,filename:&String)->Result<String,Box<dyn Er
     .source("https://2020.xmtv.cn/search/?search_text=斗阵来看戏".to_string())
     .tag("戏曲,斗阵来看戏".to_string())
     .tid(180)
-    .title(title.to_string())
+    .title(format!("{} 斗阵来看戏",title))
     .videos(uploaded_videos)
     .build();
     //println!("{:?}",uploaded_videos);

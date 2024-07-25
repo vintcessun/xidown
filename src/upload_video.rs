@@ -38,7 +38,7 @@ pub fn upload(video:&Video)->Result<(),Box<dyn Error>>{
 fn download_video(video:&VideoUrl,filename:&String)->Result<(),Box<dyn Error>>{
     let url = get_video_list::get_video_url(&video.url)?;
     let mut curl = Easy::new();
-    let mut file = File::create(&filename)?;
+    
     println!("\"{}\"=>\"{}\"",&url,&filename);
     curl.url(&url)?;
     curl.progress(true)?;
@@ -51,11 +51,12 @@ fn download_video(video:&VideoUrl,filename:&String)->Result<(),Box<dyn Error>>{
         }
         true
     })?;
-    curl.write_function(move |data| {
-        file.write(&data).unwrap();
-        Ok(data.len())
-    })?;
     loop{
+        let mut file = File::create(&filename)?;
+        curl.write_function(move |data| {
+            file.write(&data).unwrap();
+            Ok(data.len())
+        })?;
         match curl.perform(){
             Ok(_)=>{
                 println!("");

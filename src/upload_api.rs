@@ -107,7 +107,7 @@ async fn _append_video(filename:&String,bv:&String)->Result<(),Box<dyn Error>>{
     let mut studio = BiliBili::new(&login_info, &client).studio_data(Vid::Bvid(bv.clone())).await?;
     studio.videos.append(&mut uploaded_videos);
     let _ret = studio.edit(&login_info).await?;
-    //println!("{}",_ret);
+    println!("{}",_ret);
     Ok(())
 }
 

@@ -13,6 +13,7 @@ use std::task::Poll;
 use reqwest::Body;
 use serde_json::Value;
 use std::io::Seek;
+use log::{error};
 
 
 pub fn upload_video(title:&String,filename:&String)->Result<String,Box<dyn Error>>{
@@ -21,7 +22,16 @@ pub fn upload_video(title:&String,filename:&String)->Result<String,Box<dyn Error
     .build()
     .unwrap()
     .block_on(async {
-        _upload_video(title,filename).await
+        loop{
+            match _upload_video(title,filename).await{
+                Ok(ret)=>{
+                    return Ok(ret);
+                },
+                Err(_)=>{
+                    error!("上传失败，正在重试");
+                }
+            }
+        }
     })
 }
 
@@ -31,7 +41,16 @@ pub fn append_video(filename:&String,bv:&String)->Result<(),Box<dyn Error>>{
     .build()
     .unwrap()
     .block_on(async {
-        _append_video(filename,bv).await
+        loop{
+            match _append_video(filename,bv).await{
+                Ok(ret)=>{
+                    return Ok(ret);
+                }
+                Err(_)=>{
+                    error!("上传失败，正在重试");
+                }
+            }
+        }
     })
 }
 
@@ -41,7 +60,16 @@ pub fn show_video(bv:&String)->Result<Value,Box<dyn Error>>{
     .build()
     .unwrap()
     .block_on(async {
-        _show_video(bv).await
+        loop{
+            match _show_video(bv).await{
+                Ok(ret)=>{
+                    return Ok(ret);
+                },
+                Err(_)=>{
+                    error!("查询信息失败，正在重试");
+                }
+            }
+        }
     })
 }
 

@@ -2,19 +2,32 @@ mod get_download_list;
 mod get_video_list;
 mod upload_video;
 mod upload_api;
-//mid:"33906231"
+use log::info;
+use std::env::set_var;
+use threadpool::ThreadPool;
 
 fn main(){
+    set_var("RUST_LOG","info");
+    env_logger::init();
+
     let mid:&str="33906231";
+    info!("从mid:{:?}获取",&mid);
     let mut videos = get_download_list::get_by_mid(mid).unwrap();
-    //println!("Have got the videos by file");
+    info!("获取到videos = {:?}",&videos);
     let urls = get_video_list::get().unwrap();
-    println!("-----------------------------------------------------");
+    info!("获取到urls = {:?}",urls);
     videos = get_video_list::add_url(videos,urls);
-    //println!("{:#?}",videos);
+    info!("整理完成 videos = {:?}",&videos);
+    videos = upload_video::fliters(videos).unwrap();
+    info!("筛选完成 videos = {:?}",&videos);
+
+    let pool = ThreadPool::new(2);
     for video in videos{
-        upload_video::upload(&video).unwrap();
+        pool.execute(move||{
+            upload_video::upload_range_video(video).unwrap();
+        });
     }
+    pool.join();
 }
 
 

@@ -2,11 +2,11 @@ use url::Url;
 use reqwest::blocking::Client;
 use std::error::Error;
 use serde_json::Value;
+use log::{error, info, warn, debug};
 
 use crate::get_download_list::Video;
 
-#[derive(Debug)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct VideoUrl{
     pub title:String,
     pub name:String,
@@ -15,10 +15,13 @@ pub struct VideoUrl{
 }
 
 pub fn get()->Result<Vec<VideoUrl>,Box<dyn Error>>{
-    println!("开始下载");
+    //info!("开始下载");
     let url = Url::parse("https://mapi1.kxm.xmtv.cn/api/open/xiamen/web_search_list.php?count=10000&search_text=%E6%96%97%E9%98%B5%E6%9D%A5%E7%9C%8B%E6%88%8F&offset=0&bundle_id=livmedia&order_by=publish_time&time=0&with_count=1")?;
+    info!("url = {:?}",&url);
     let res = Client::new().get(url).send()?;
+    info!("res = {:?}",&res);
     let text:String = res.text()?;
+    debug!("text = {:?}",&text);
     let json:Value = serde_json::from_str(text.as_str())?;
     let mut ret:Vec<VideoUrl> = vec![];
     let data = json["data"].as_array().unwrap().into_iter().rev();
@@ -53,33 +56,43 @@ pub fn get()->Result<Vec<VideoUrl>,Box<dyn Error>>{
                     t
                 }
                 _=>{
-                    println!("存在一些无法识别的组别已经忽略，下面是一些信息或许有助于修复");
-                    println!("titile:{:?}",&title);
-                    println!("name:{:?}",&name);
-                    println!("url_into_share:{:?}",&url_into_share);
+                    error!("存在一些无法识别的组别已经忽略，下面是一些信息或许有助于修复");
+                    error!("titile:{:?}",&title);
+                    error!("name:{:?}",&name);
+                    error!("url_into_share:{:?}",&url_into_share);
                     continue;
                 }
             }
         };
         let t = t.parse::<u32>()?;
         let video = VideoUrl{title:title,name:name,url:url_into_share,time:t};
+        info!("获取到 video = {:?}",&video);
         //println!("{:?}",video);
         ret.push(video);
     }
+    warn!("获取完成 ret = {:?}",&ret);
     return Ok(ret);
 }
 
 pub fn get_video_url(url:&String)->Result<String,Box<dyn Error>>{
     let url_into_share=Url::parse(url.as_str())?;
+    info!("url_into_share = {:?}",&url_into_share);
     let res = loop{
         match Client::new().get(url_into_share.clone()).send(){
-            Ok(ret)=>{break ret;}
-            Err(_)=>{}
+            Ok(ret)=>{
+                info!("请求结果 ret = {:?}",&ret);
+                break ret;
+            }
+            Err(_)=>{
+                error!("请求失败 url = {:?}",&url_into_share);
+            }
         }
     };
     let text: String = res.text()?;
+    debug!("text = {:?}",&text);
     let text = text[(text.find("<source src=").unwrap()+13)..].to_string();
     let download_url = text[..(text.find("\"").unwrap())].to_string();
+    info!("获取到 {:?} => {:?}",&url_into_share,&download_url);
     Ok(download_url)
 }
 

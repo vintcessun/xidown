@@ -10,9 +10,9 @@ use curl::easy::Easy;
 
 fn fliter(video:&Video)->Result<Video,Box<dyn Error>>{
     info!("开始确认 video = {:?}",&video);
-    if video.bv==""{
+    if video.bv.is_empty(){
         //warn!("应该上传video下的所有：{:?}",video);
-        return Ok(video.clone());
+        Ok(video.clone())
         //warn!("开始上传 {:?}",&video.range[0]);
         //let bv = upload_video(&video.range[0])?;
         //for i in 1..video.range.len(){
@@ -27,7 +27,11 @@ fn fliter(video:&Video)->Result<Video,Box<dyn Error>>{
             //println!("[{}]{}",&video.title,&video.bv);
             //println!("[{}]{}",&video.title,&text);
             let mut exists = false;
-            for j in json["videos"].as_array().unwrap().into_iter().rev(){
+            let videos = match json["videos"].as_array(){
+                Some(ret)=>{ret}
+                None=>{&vec![]}
+            };
+            for j in videos.iter().rev(){
                 if j["title"]==i.name{
                     exists=true;
                 }
@@ -38,7 +42,7 @@ fn fliter(video:&Video)->Result<Video,Box<dyn Error>>{
                 //append_video(&i,&video.bv)?;
             }
         }
-        return Ok(per_video);
+        Ok(per_video)
     }
 }
 
@@ -47,7 +51,7 @@ pub fn fliters(videos:Vec<Video>)->Result<Vec<Video>,Box<dyn Error>>{
     let mut ret = vec![];
     for i in videos{
         let one = fliter(&i)?;
-        if one.range.len()!=0{
+        if !one.range.is_empty(){
             ret.push(one);
         }
     }
@@ -55,7 +59,7 @@ pub fn fliters(videos:Vec<Video>)->Result<Vec<Video>,Box<dyn Error>>{
 }
 
 pub fn upload_range_video(video:Video)->Result<(),Box<dyn Error>>{
-    if video.bv == ""{
+    if video.bv.is_empty(){
         warn!("开始上传 {:?}",&video.range[0]);
         let bv = upload_video(&video.range[0])?;
         for i in 1..video.range.len(){
@@ -89,14 +93,14 @@ fn download_video(video:&VideoUrl,filename:&String)->Result<(),Box<dyn Error>>{
         true
     })?;
     loop{
-        let mut file = File::create(&filename)?;
+        let mut file = File::create(filename)?;
         curl.write_function(move |data| {
-            file.write(&data).unwrap();
+            file.write_all(data).unwrap();
             Ok(data.len())
         })?;
         match curl.perform(){
             Ok(_)=>{
-                println!("");
+                println!();
                 break;
             }
             Err(_)=>{
@@ -130,7 +134,7 @@ fn upload_video(video:&VideoUrl)->Result<String,Box<dyn Error>>{
     info!("任务 video = {:?}",&video);
     let filename = format!("{}.mp4",video.name);
     info!("下载到{:?}",&filename);
-    download_video(&video,&filename)?;
+    download_video(video,&filename)?;
     info!("任务 video = {:?} 下载到{:?}完成",&video,&filename);
     info!("开始上传 video = {:?}",&video);
     let ret = upload_api::upload_video(&video.title,&filename)?;
@@ -145,12 +149,12 @@ fn append_video(video:&VideoUrl,bv:&String)->Result<(),Box<dyn Error>>{
     info!("任务 video = {:?} 上传到 bv = {:?}",&video,&bv);
     let filename = format!("{}.mp4",video.name);
     info!("下载到{:?}",&filename);
-    download_video(&video,&filename)?;
+    download_video(video,&filename)?;
     info!("任务 video = {:?} 下载到{:?}完成",&video,&filename);
     info!("开始上传 video = {:?}",&video);
-    let ret = upload_api::append_video(&filename,&bv)?;
+    upload_api::append_video(&filename,bv)?;
     info!("上传完成 video = {:?}",&video);
     remove_file(&filename)?;
     info!("删除文件 filename = {:?}",&filename);
-    Ok(ret)
+    Ok(())
 }

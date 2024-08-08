@@ -24,36 +24,35 @@ pub fn get()->Result<Vec<VideoUrl>,Box<dyn Error>>{
     debug!("text = {:?}",&text);
     let json:Value = serde_json::from_str(text.as_str())?;
     let mut ret:Vec<VideoUrl> = vec![];
-    let data = json["data"].as_array().unwrap().into_iter().rev();
-    for i in data{
-        let name = i["title"].to_string().replace("\"","");
+    let data = match json["data"].as_array(){
+        Some(ret)=>{ret}
+        None=>{&vec![]}
+    };
+    for i in data.iter().rev(){
+        let name = i["title"].to_string().replace('\"',"");
         let position = match name.find("斗阵来看戏"){
             Some(ret)=>{ret}
             _=>{name.len()}
         };
-        let title = name[0..position].replace("（","(").split("(").collect::<Vec<_>>()[0].replace(" ","");
+        let title = name[0..position].replace('（',"(").split('(').collect::<Vec<_>>()[0].replace(' ',"");
         let url_into_share = match i["content_urls"]["share"].as_str(){
             Some(ret)=>{ret.to_string()}
             _=>{continue;}
         };
-        let position = match name.find("斗阵来看戏"){
-            Some(ret)=>{ret}
-            _=>{0}
-        }+"斗阵来看戏".len();
+        let position = name.find("斗阵来看戏").unwrap_or(0)+"斗阵来看戏".len();
         let t: &str = &name[position..];
         //println!("{}",&name);
-        let t = t.split(" ").collect::<Vec<_>>();
+        let t = t.split(' ').collect::<Vec<_>>();
         let t=if t.len()>=2{
-            t[1].replace(".","").replace("-","")
+            t[1].replace(['.', '-'], "")
         }
         else{
             //let t: &str = t[0];
-            match url_into_share.find("-"){
+            match url_into_share.find('-'){
                 Some(_)=>{
-                    let t = url_into_share.split("/").collect::<Vec<_>>();
+                    let t = url_into_share.split('/').collect::<Vec<_>>();
                     let t = t[4];
-                    let t = t.replace(".","").replace("-","");
-                    t
+                    t.replace(['.', '-'], "")
                 }
                 _=>{
                     error!("存在一些无法识别的组别已经忽略，下面是一些信息或许有助于修复");
@@ -65,17 +64,17 @@ pub fn get()->Result<Vec<VideoUrl>,Box<dyn Error>>{
             }
         };
         let t = t.parse::<u32>()?;
-        let video = VideoUrl{title:title,name:name,url:url_into_share,time:t};
+        let video = VideoUrl{title,name,url:url_into_share,time:t};
         info!("获取到 video = {:?}",&video);
         //println!("{:?}",video);
         ret.push(video);
     }
     warn!("获取完成 ret = {:?}",&ret);
-    return Ok(ret);
+    Ok(ret)
 }
 
-pub fn get_video_url(url:&String)->Result<String,Box<dyn Error>>{
-    let url_into_share=Url::parse(url.as_str())?;
+pub fn get_video_url(url:&str)->Result<String,Box<dyn Error>>{
+    let url_into_share=Url::parse(url)?;
     info!("url_into_share = {:?}",&url_into_share);
     let res = loop{
         match Client::new().get(url_into_share.clone()).send(){
@@ -90,8 +89,8 @@ pub fn get_video_url(url:&String)->Result<String,Box<dyn Error>>{
     };
     let text: String = res.text()?;
     debug!("text = {:?}",&text);
-    let text = text[(text.find("<source src=").unwrap()+13)..].to_string();
-    let download_url = text[..(text.find("\"").unwrap())].to_string();
+    let text = text[(text.find("<source src=").unwrap_or(0)+13)..].to_string();
+    let download_url = text[..(text.find('\"').unwrap_or(0))].to_string();
     info!("获取到 {:?} => {:?}",&url_into_share,&download_url);
     Ok(download_url)
 }
@@ -105,7 +104,7 @@ pub fn add_url(mut videos:Vec<Video>,urls:Vec<VideoUrl>)->Vec<Video>{
                 video.range.push(url.clone());
             }
         }
-        if exists==false{
+        if !exists{
             let mut video=Video{title:url.title.clone(),bv:"".to_string(),range:vec![]};
             video.range.push(url.clone());
             videos.push(video);
@@ -114,5 +113,5 @@ pub fn add_url(mut videos:Vec<Video>,urls:Vec<VideoUrl>)->Vec<Video>{
     for video in &mut videos{
         video.range.sort_by(|a,b| a.time.cmp(&b.time));
     }
-    return videos;
+    videos
 }

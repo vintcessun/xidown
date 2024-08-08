@@ -2,9 +2,7 @@ use url::Url;
 use reqwest::blocking::Client;
 use std::error::Error;
 use serde_json::Value;
-use std::fs::File;
-use std::io::Write;
-use std::fs::read_to_string;
+//use std::fs::read_to_string;
 use crate::get_video_list::VideoUrl;
 use log::{info, warn, error, debug};
 use std::ops::Index;
@@ -17,19 +15,19 @@ pub struct Video{
     pub range:Vec<VideoUrl>
 }
 
+/*
+##弃用的函数 因为总是从本地读取可能遇到视频被锁后继续上传老视频失败
 pub fn save(filename:&str,video:&Vec<Video>)->Result<(),Box<dyn Error>>{
     let mut file = File::create(filename)?;
     for i in video{
-        write!(file,"{} {}\n",i.title,i.bv)?;
+        writeln!(file,"{} {}",i.title,i.bv)?;
     }
     Ok(())
 }
+*/
 
 fn contain_value(value:&Value,index:&str)->bool{
-    match value.index(index){
-        Value::Null=>{return false;}
-        _=>{return true;}
-    }
+    !matches!(value.index(index),Value::Null)
 }
 
 pub fn get_by_mid(mid:&str)->Result<Vec<Video>,Box<dyn Error>>{
@@ -54,19 +52,19 @@ pub fn get_by_mid(mid:&str)->Result<Vec<Video>,Box<dyn Error>>{
         let json:Value = serde_json::from_str(&text)?;
         if json["code"]==0{
             let Some(cards) = json["data"]["cards"].as_array() else{continue 'retry;};
-            if cards.len() == 0{
+            if cards.is_empty(){
                 info!("已经没有数据");
                 break;
             }
             for i in cards{
                 let Some(card) = i["card"].as_str() else{continue 'retry;};
-                let per_card:Value = serde_json::from_str(&card)?;
+                let per_card:Value = serde_json::from_str(card)?;
                 if contain_value(&per_card, "title"){
                     let Some(title) = per_card["title"].as_str() else{continue 'retry;};
-                    let title = title.split(" ").collect::<Vec<_>>()[0].to_string();
+                    let title = title.split(' ').collect::<Vec<_>>()[0].to_string();
                     let Some(bv) = i["desc"]["bvid"].as_str() else{continue 'retry;};
                     let bv = bv.to_string();
-                    let video: Video = Video{title:title,bv:bv,range:vec![]};
+                    let video: Video = Video{title,bv,range:vec![]};
                     info!("获取到 video = {:?}",&video);
                     //println!("{:#?}",video);
                     ret.push(video);
@@ -87,7 +85,8 @@ pub fn get_by_mid(mid:&str)->Result<Vec<Video>,Box<dyn Error>>{
     Ok(ret)
 }
 
-
+/*
+##弃用的函数 弃用原因和save一样
 pub fn get_by_file(filename:&str)->Result<Vec<Video>,Box<dyn Error>>{
     let mut ret:Vec<Video>=vec![];
     for line in read_to_string(filename)?.lines(){
@@ -98,3 +97,4 @@ pub fn get_by_file(filename:&str)->Result<Vec<Video>,Box<dyn Error>>{
     }
     Ok(ret)
 }
+*/

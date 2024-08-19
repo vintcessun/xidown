@@ -1,144 +1,147 @@
 use anyhow::{Context, Result};
 use biliup::client::{Client, LoginInfo};
-use biliup::video::{BiliBili, Video, Vid};
+use biliup::video::{BiliBili, Vid, Video};
 use biliup::{line, VideoFile};
-use std::path::{Path, PathBuf};
-use std::time::Instant;
-use std::error::Error;
-use indicatif::{ProgressBar, ProgressStyle};
-use futures::{Stream, StreamExt};
 use bytes::{Buf, Bytes};
-use std::pin::Pin;
-use std::task::Poll;
+use futures::{Stream, StreamExt};
+use indicatif::{ProgressBar, ProgressStyle};
+use log::error;
 use reqwest::Body;
 use serde_json::Value;
+use std::error::Error;
 use std::io::Seek;
-use log::error;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::task::Poll;
+use std::time::Instant;
 
-
-pub fn upload_video(title:&String,filename:&String)->Result<String,Box<dyn Error>>{
+pub fn upload_video(title: &String, filename: &String) -> Result<String, Box<dyn Error>> {
     tokio::runtime::Builder::new_multi_thread()
-    .enable_all()
-    .build()
-    .unwrap()
-    .block_on(async {
-        loop{
-            match _upload_video(title,filename).await{
-                Ok(ret)=>{
-                    return Ok(ret);
-                },
-                Err(_)=>{
-                    error!("上传失败，正在重试");
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            loop {
+                match _upload_video(title, filename).await {
+                    Ok(ret) => {
+                        return Ok(ret);
+                    }
+                    Err(_) => {
+                        error!("上传失败，正在重试");
+                    }
                 }
             }
-        }
-    })
+        })
 }
 
-pub fn append_video(filename:&String,bv:&String)->Result<(),Box<dyn Error>>{
+pub fn append_video(filename: &String, bv: &String) -> Result<(), Box<dyn Error>> {
     tokio::runtime::Builder::new_multi_thread()
-    .enable_all()
-    .build()
-    .unwrap()
-    .block_on(async {
-        loop{
-            match _append_video(filename,bv).await{
-                Ok(ret)=>{
-                    return Ok(ret);
-                }
-                Err(_)=>{
-                    error!("上传失败，正在重试");
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            loop {
+                match _append_video(filename, bv).await {
+                    Ok(ret) => {
+                        return Ok(ret);
+                    }
+                    Err(_) => {
+                        error!("上传失败，正在重试");
+                    }
                 }
             }
-        }
-    })
+        })
 }
 
-pub fn show_video(bv:&String)->Result<Value,Box<dyn Error>>{
+pub fn show_video(bv: &String) -> Result<Value, Box<dyn Error>> {
     tokio::runtime::Builder::new_multi_thread()
-    .enable_all()
-    .build()
-    .unwrap()
-    .block_on(async {
-        loop{
-            match _show_video(bv).await{
-                Ok(ret)=>{
-                    return Ok(ret);
-                },
-                Err(_)=>{
-                    error!("查询信息失败，正在重试");
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            loop {
+                match _show_video(bv).await {
+                    Ok(ret) => {
+                        return Ok(ret);
+                    }
+                    Err(_) => {
+                        error!("查询信息失败，正在重试");
+                    }
                 }
             }
-        }
-    })
+        })
 }
 
-async fn _upload_video(title:&String,filename:&String)->Result<String,Box<dyn Error>>{
-    let cookie_file=PathBuf::from("cookies.json");
+async fn _upload_video(title: &String, filename: &String) -> Result<String, Box<dyn Error>> {
+    let cookie_file = PathBuf::from("cookies.json");
 
     let client = Client::new();
     let f = fopen_rw(&cookie_file)?;
-    let login_info = match client.login_by_cookies(f).await{
-        Ok(ret)=>{ret}
-        Err(_)=>{
-            renew(Client::new(),cookie_file.clone()).await?;
+    let login_info = match client.login_by_cookies(f).await {
+        Ok(ret) => ret,
+        Err(_) => {
+            renew(Client::new(), cookie_file.clone()).await?;
             let f = fopen_rw(&cookie_file)?;
             client.login_by_cookies(f).await?
         }
     };
 
-    let uploaded_videos = loop{
-        if let Ok(ret) = upload(&[PathBuf::from(&filename)], &client, 10).await{
+    let uploaded_videos = loop {
+        if let Ok(ret) = upload(&[PathBuf::from(&filename)], &client, 10).await {
             break ret;
         }
     };
     let mut builder = biliup::video::Studio::builder()
-    .desc("自传给家里老人看方便".to_string())
-    .copyright(2)
-    .source("https://2020.xmtv.cn/search/?search_text=斗阵来看戏".to_string())
-    .tag("戏曲,斗阵来看戏".to_string())
-    .tid(180)
-    .title(format!("{} 斗阵来看戏",title))
-    .videos(uploaded_videos)
-    .build();
+        .desc("自传给家里老人看方便".to_string())
+        .copyright(2)
+        .source("https://2020.xmtv.cn/search/?search_text=斗阵来看戏".to_string())
+        .tag("戏曲,斗阵来看戏".to_string())
+        .tid(180)
+        .title(format!("{} 斗阵来看戏", title))
+        .videos(uploaded_videos)
+        .build();
     //println!("{:?}",uploaded_videos);
-    let bv = loop{
+    let bv = loop {
         let ret = &builder.submit(&login_info).await;
-        match ret{
-            Ok(result)=>{
-                let bv=result["data"]["bvid"].to_string();
+        match ret {
+            Ok(result) => {
+                let bv = result["data"]["bvid"].to_string();
                 break bv;
             }
-            Err(_)=>{}
+            Err(_) => {}
         }
     };
     //println!("{:?}",ret);
     Ok(bv)
 }
 
-async fn _append_video(filename:&String,bv:&String)->Result<(),Box<dyn Error>>{
-    let cookie_file=PathBuf::from("cookies.json");
+async fn _append_video(filename: &String, bv: &String) -> Result<(), Box<dyn Error>> {
+    let cookie_file = PathBuf::from("cookies.json");
 
     let client = Client::new();
     let login_info = client.login_by_cookies(fopen_rw(cookie_file)?).await?;
-    let mut uploaded_videos = loop{
-        if let Ok(ret) = upload(&[PathBuf::from(&filename)], &client, 10).await{
+    let mut uploaded_videos = loop {
+        if let Ok(ret) = upload(&[PathBuf::from(&filename)], &client, 10).await {
             break ret;
         }
     };
-    let mut studio = BiliBili::new(&login_info, &client).studio_data(Vid::Bvid(bv.to_owned())).await?;
+    let mut studio = BiliBili::new(&login_info, &client)
+        .studio_data(Vid::Bvid(bv.to_owned()))
+        .await?;
     studio.videos.append(&mut uploaded_videos);
     let _ret = studio.edit(&login_info).await?;
-    println!("{}",_ret);
+    println!("{}", _ret);
     Ok(())
 }
 
-async fn _show_video(bv:&String)->Result<Value,Box<dyn Error>>{
-    let cookie_file=PathBuf::from("cookies.json");
+async fn _show_video(bv: &String) -> Result<Value, Box<dyn Error>> {
+    let cookie_file = PathBuf::from("cookies.json");
 
     let client = Client::new();
     let login_info = client.login_by_cookies(fopen_rw(cookie_file)?).await?;
-    let video_info = BiliBili::new(&login_info, &client).video_data(Vid::Bvid(bv.to_owned())).await?;
+    let video_info = BiliBili::new(&login_info, &client)
+        .video_data(Vid::Bvid(bv.to_owned()))
+        .await?;
     Ok(video_info)
 }
 
@@ -153,28 +156,24 @@ async fn renew(client: Client, user_cookie: PathBuf) -> Result<()> {
     Ok(())
 }
 
-pub async fn upload(
-    video_path: &[PathBuf],
-    client: &Client,
-    limit: usize,
-) -> Result<Vec<Video>> {
+pub async fn upload(video_path: &[PathBuf], client: &Client, limit: usize) -> Result<Vec<Video>> {
     let mut videos = Vec::new();
-    let line = line::bda2();/*match line {
-        // Some("kodo") => line::kodo(),
-        // Some("bda2") => line::bda2(),
-        // Some("ws") => line::ws(),
-        // Some("qn") => line::qn(),
-        // Some("cos") => line::cos(),
-        // Some("cos-internal") => line::cos_internal(),
-        // Some(name) => panic!("不正确的线路{name}"),
-        Some(UploadLine::Kodo) => line::kodo(),
-        Some(UploadLine::Bda2) => line::bda2(),
-        Some(UploadLine::Ws) => line::ws(),
-        Some(UploadLine::Qn) => line::qn(),
-        Some(UploadLine::Cos) => line::cos(),
-        Some(UploadLine::CosInternal) => line::cos_internal(),
-        None => Probe::probe().await.unwrap_or_default(),
-    };*/
+    let line = line::bda2(); /*match line {
+                                 // Some("kodo") => line::kodo(),
+                                 // Some("bda2") => line::bda2(),
+                                 // Some("ws") => line::ws(),
+                                 // Some("qn") => line::qn(),
+                                 // Some("cos") => line::cos(),
+                                 // Some("cos-internal") => line::cos_internal(),
+                                 // Some(name) => panic!("不正确的线路{name}"),
+                                 Some(UploadLine::Kodo) => line::kodo(),
+                                 Some(UploadLine::Bda2) => line::bda2(),
+                                 Some(UploadLine::Ws) => line::ws(),
+                                 Some(UploadLine::Qn) => line::qn(),
+                                 Some(UploadLine::Cos) => line::cos(),
+                                 Some(UploadLine::CosInternal) => line::cos_internal(),
+                                 None => Probe::probe().await.unwrap_or_default(),
+                             };*/
     // let line = line::kodo();
     for video_path in video_path {
         //println!("{line:?}");

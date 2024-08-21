@@ -1,70 +1,89 @@
 mod get_download_list;
-mod get_video_list;
-mod upload_api;
 mod upload_video;
-use chrono::Utc;
+use indicatif::MultiProgress;
+//use chrono::Utc;
+use anyhow::Result;
+use get_download_list::*;
 use log::info;
-use std::env::{args, set_var};
-use std::process::Command;
+use std::env::set_var;
+use std::sync::Arc;
 use threadpool::ThreadPool;
+use upload_video::*;
 
 const ERROR_LIST: [&str; 2] = ["-2", "-4"];
+static mut UPLOAD_VIDEO: Vec<String> = Vec::new();
 
-fn main() {
-    set_var("RUST_LOG", "info");
-    env_logger::init();
-
+#[tokio::main]
+async fn main() -> Result<()> {
     let mid: &str = "33906231";
     info!("从mid:{:?}获取", &mid);
-    let mut videos = get_download_list::get_by_mid(mid).unwrap();
+    let videos = get_by_mid(mid).await?;
+
     info!("获取到videos = {:?}", &videos);
-    let urls = get_video_list::get().unwrap();
+    let urls = xmtv_api::get()?;
     info!("获取到urls = {:?}", urls);
-    videos = get_video_list::add_url(videos, urls);
+    let videos = add_url(videos, urls);
     info!("整理完成 videos = {:?}", &videos);
-    videos = upload_video::fliters(videos).unwrap();
-    info!("筛选完成 videos = {:?}", &videos);
+    let videos = fliters(videos).await?;
 
-    let mut bvs = Vec::with_capacity(videos.len());
-
+    set_var("RUST_LOG", "info");
+    env_logger::init();
+    let m = Arc::new(MultiProgress::new());
     let pool = ThreadPool::new(3);
     for video in videos {
-        bvs.push(video.bv.clone());
+        let m = m.clone();
         pool.execute(move || {
-            upload_video::upload_range_video(video).unwrap();
+            futures::executor::block_on(async {
+                video_run(video, Some(m.as_ref().to_owned())).await;
+            })
         });
     }
-    let mut last_time = Utc::now().time();
-    loop {
-        if pool.queued_count() == 0 {
-            break;
-        }
 
-        let now_time = Utc::now().time();
-        let delta = (now_time - last_time).num_seconds() as usize;
-        if delta > 3600 {
-            last_time = now_time;
-            if !each_bv_state(&bvs) {
-                let args = args().collect::<String>();
-                Command::new(format!("start {}", args));
-                break;
-            }
-        }
-    }
+    pool.join();
+
+    Ok(())
 }
 
-fn each_bv_state(bvs: &[String]) -> bool {
+async fn video_run(video: Video, multi: Option<MultiProgress>) {
+    let mut video = video;
+    let mut this_bv = match upload_first(&video, multi.clone()).await {
+        Some(bv) => bv,
+        None => video.bv.clone(),
+    };
+    unsafe {
+        UPLOAD_VIDEO.push(this_bv.clone());
+    };
+
     'outer: loop {
-        let mut state = true;
-        for bv in bvs {
-            let json = match upload_api::show_video(bv) {
-                Ok(ret) => ret,
-                Err(_) => continue 'outer,
-            };
-            let state_num = json["archive"]["state"].to_string();
-            state = state && !ERROR_LIST.contains(&state_num.as_str());
+        for per in video.range[1..].iter() {
+            loop {
+                info!("查询{}状态", &this_bv);
+                let json = loop_show_video(&this_bv).await;
+                let state_num = json["archive"]["state"].to_string();
+                info!("{}状态码为{}", &this_bv, &state_num);
+                if ERROR_LIST.contains(&state_num.as_str()) {
+                    video.bv = "".to_string();
+                    this_bv = upload_first(&video, multi.clone()).await.unwrap();
+                    continue 'outer;
+                }
+                if append_video(per, &video.bv, multi.clone()).await.is_ok() {
+                    break;
+                }
+            }
         }
-        break state;
+
+        break;
+    }
+
+    unsafe {
+        let uploaded = UPLOAD_VIDEO.clone();
+        let mut ret = Vec::with_capacity(UPLOAD_VIDEO.len());
+        for bv in uploaded {
+            if bv != this_bv {
+                ret.push(bv);
+            }
+        }
+        UPLOAD_VIDEO = ret;
     }
 }
 

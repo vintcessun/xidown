@@ -22,3 +22,8 @@ env_logger = "0.11.5"
 threadpool = "1.8.1"
 curl = "0.4.46"
 chrono = "0.4.38"
+BiliupApi = "0.1.4"
+xmtv_api = "0.1.6"
+async_executors = { version = "0.7.0", features = ["threadpool"] }
+rayon = "1.10.0"
+scoped_threadpool = "0.1.9"

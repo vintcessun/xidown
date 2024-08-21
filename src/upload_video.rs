@@ -1,34 +1,57 @@
 use crate::get_download_list::Video;
-use crate::get_video_list::{get_video_url, VideoUrl};
-use crate::upload_api;
-use curl::easy::Easy;
-use log::{error, info, warn};
-use std::error::Error;
+use anyhow::{anyhow, Result};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use log::{info, warn};
+use reqwest::header;
+use reqwest::Client;
+use serde_json::Value;
+use std::fs;
 use std::fs::remove_file;
-use std::fs::File;
 use std::io::Write;
+use std::path::Path;
+use xmtv_api::VideoUrl;
+use BiliupApi::{VideoInfo, _append_video, _show_video, _upload_video};
 
-fn fliter(video: &Video) -> Result<Video, Box<dyn Error>> {
+pub async fn loop_show_video(bv: &String) -> Value {
+    loop {
+        if let Ok(ret) = _show_video(bv).await {
+            break ret;
+        }
+    }
+}
+
+pub async fn fliters(videos: Vec<Video>) -> Result<Vec<Video>> {
+    let mut ret = Vec::with_capacity(videos.len());
+
+    let pb = ProgressBar::new(videos.len() as u64);
+    pb.set_style(ProgressStyle::default_bar()
+    .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")?);
+
+    for video in videos {
+        let ret_video = fliter(&video).await.unwrap();
+        if !ret_video.range.is_empty() {
+            ret.push(ret_video);
+        }
+        pb.inc(1);
+    }
+
+    pb.finish();
+
+    Ok(ret)
+}
+
+async fn fliter(video: &Video) -> Result<Video> {
     info!("开始确认 video = {:?}", &video);
     if video.bv.is_empty() {
-        //warn!("应该上传video下的所有：{:?}",video);
         Ok(video.clone())
-        //warn!("开始上传 {:?}",&video.range[0]);
-        //let bv = upload_video(&video.range[0])?;
-        //for i in 1..video.range.len(){
-        //    warn!("开始上传 {:?} 到 bv = {:?}",&video.range[i],&bv);
-        //    append_video(&video.range[i],&bv)?;
-        //}
     } else {
-        let json = upload_api::show_video(&video.bv)?;
+        let json = loop_show_video(&video.bv).await;
         let mut per_video: Video = Video {
             title: video.title.clone(),
             bv: video.bv.clone(),
-            range: vec![],
+            range: Vec::with_capacity(video.range.len()),
         };
         for i in &video.range {
-            //println!("[{}]{}",&video.title,&video.bv);
-            //println!("[{}]{}",&video.title,&text);
             let mut exists = false;
             let videos = match json["videos"].as_array() {
                 Some(ret) => ret,
@@ -40,113 +63,88 @@ fn fliter(video: &Video) -> Result<Video, Box<dyn Error>> {
                 }
             }
             if !exists {
-                //warn!("应该上传{:?} 到 bv = {:?}",&i,&video.bv);
-                per_video.range.push(i.clone())
-                //append_video(&i,&video.bv)?;
+                per_video.range.push(i.to_owned())
             }
         }
         Ok(per_video)
     }
 }
 
-pub fn fliters(videos: Vec<Video>) -> Result<Vec<Video>, Box<dyn Error>> {
-    info!("开始确认");
-    let mut ret = vec![];
-    for i in videos {
-        let one = fliter(&i)?;
-        if !one.range.is_empty() {
-            ret.push(one);
-        }
-    }
-    Ok(ret)
-}
-
-pub fn upload_range_video(video: Video) -> Result<(), Box<dyn Error>> {
+pub async fn upload_first(video: &Video, multi: Option<MultiProgress>) -> Option<String> {
     if video.bv.is_empty() {
-        warn!("开始上传 {:?}", &video.range[0]);
-        let bv = upload_video(&video.range[0])?;
-        for i in 1..video.range.len() {
-            warn!("开始上传 {:?} 到 bv = {:?}", &video.range[i], &bv);
-            append_video(&video.range[i], &bv)?;
-        }
+        Some(loop {
+            warn!("开始上传 {:?}", &video.range[0]);
+            if let Ok(ret) = upload_video(&video.range[0], multi.clone()).await {
+                break ret;
+            }
+        })
     } else {
-        for i in video.range {
-            warn!("应该上传{:?} 到 bv = {:?}", &i, &video.bv);
-            append_video(&i, &video.bv)?;
+        None
+    }
+}
+
+async fn download_video(video: &VideoUrl, multi: Option<MultiProgress>) -> Result<String> {
+    let filename = format!("{}.mp4", &video.name);
+    let url = video.url.as_str();
+    let path = Path::new(&filename);
+
+    let client = Client::new();
+    let total_size = {
+        let resp = client.head(url).send().await?;
+        if resp.status().is_success() {
+            resp.headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|ct_len| ct_len.to_str().ok())
+                .and_then(|ct_len| ct_len.parse().ok())
+                .unwrap_or(0)
+        } else {
+            return Err(anyhow!("不能下载{} Error: {:?}", url, resp.status(),));
         }
+    };
+
+    let client = Client::new();
+    let mut request = client.get(url);
+    let pb = ProgressBar::new(total_size);
+    let pb = match multi {
+        Some(m) => m.add(pb),
+        None => pb,
+    };
+    pb.set_style(ProgressStyle::default_bar()
+    .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")?);
+
+    if path.exists() {
+        let size = path.metadata()?.len().saturating_sub(1);
+        request = request.header(header::RANGE, format!("bytes={}-", size));
+        pb.inc(size);
     }
-    Ok(())
+    let mut source = request.send().await?;
+    let mut dest = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    while let Some(chunk) = source.chunk().await? {
+        dest.write_all(&chunk)?;
+        pb.inc(chunk.len() as u64);
+    }
+    Ok(filename)
 }
 
-fn download_video(video: &VideoUrl, filename: &String) -> Result<(), Box<dyn Error>> {
-    let url = get_video_url(&video.url)?;
-    let mut curl = Easy::new();
-
-    info!("\"{}\"=>\"{}\"", &url, &filename);
-    curl.url(&url)?;
-    curl.progress(true)?;
-    curl.progress_function(
-        |total_download_bytes, cur_download_bytes, _total_upload_bytes, _cur_upload_bytes| {
-            if total_download_bytes > 0.0 {
-                left_print(
-                    format!(
-                        "已下载:{:.2}%",
-                        cur_download_bytes / total_download_bytes * 100.0
-                    )
-                    .as_str(),
-                );
-            } else {
-                left_print("已下载:0%");
-            }
-            true
-        },
-    )?;
-    loop {
-        let mut file = File::create(filename)?;
-        curl.write_function(move |data| {
-            file.write_all(data).unwrap();
-            Ok(data.len())
-        })?;
-        match curl.perform() {
-            Ok(_) => {
-                println!();
-                break;
-            }
-            Err(_) => {
-                error!("下载失败，正在重试")
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn left_print(msg: &str) {
-    let mut str: String = msg.to_string();
-    for _ in 0..str.len() {
-        str.push('\x08')
-    }
-    print!("{}", str);
-}
-
-/*
-fn left_print(msg:&str){
-    let mut str:String = msg.to_string();
-    for _ in 0..str.len(){
-        str.push('\x08')
-    }
-    print!("{}",str);
-}
-*/
-
-fn upload_video(video: &VideoUrl) -> Result<String, Box<dyn Error>> {
+pub async fn upload_video(video: &VideoUrl, multi: Option<MultiProgress>) -> Result<String> {
+    let videoinfo = VideoInfo {
+        title: format!("{} 斗阵来看戏", &video.title),
+        copyright: 2,
+        source: "https://2020.xmtv.cn/search/?search_text=斗阵来看戏".to_string(),
+        tag: "戏曲,斗阵来看戏".to_string(),
+        tid: 180,
+        desc: "自传给家里老人看方便".to_string(),
+    };
     info!("任务 video = {:?}", &video);
     let filename = format!("{}.mp4", video.name);
     info!("下载到{:?}", &filename);
-    download_video(video, &filename)?;
+    download_video(video, multi.clone()).await?;
     info!("任务 video = {:?} 下载到{:?}完成", &video, &filename);
     info!("开始上传 video = {:?}", &video);
-    let ret = upload_api::upload_video(&video.title, &filename)?;
+    let ret = _upload_video(videoinfo, &filename, multi).await?;
     info!("上传完成 video = {:?}", &video);
     info!("获取到bv号 ret = {:?}", &ret);
     remove_file(&filename)?;
@@ -154,14 +152,18 @@ fn upload_video(video: &VideoUrl) -> Result<String, Box<dyn Error>> {
     Ok(ret)
 }
 
-fn append_video(video: &VideoUrl, bv: &String) -> Result<(), Box<dyn Error>> {
+pub async fn append_video(
+    video: &VideoUrl,
+    bv: &String,
+    multi: Option<MultiProgress>,
+) -> Result<()> {
     info!("任务 video = {:?} 上传到 bv = {:?}", &video, &bv);
     let filename = format!("{}.mp4", video.name);
     info!("下载到{:?}", &filename);
-    download_video(video, &filename)?;
+    download_video(video, multi.clone()).await?;
     info!("任务 video = {:?} 下载到{:?}完成", &video, &filename);
     info!("开始上传 video = {:?}", &video);
-    upload_api::append_video(&filename, bv)?;
+    _append_video(&filename, bv, multi).await?;
     info!("上传完成 video = {:?}", &video);
     remove_file(&filename)?;
     info!("删除文件 filename = {:?}", &filename);

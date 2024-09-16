@@ -1,17 +1,14 @@
 mod get_download_list;
 mod upload_video;
-use indicatif::MultiProgress;
-//use chrono::Utc;
 use anyhow::Result;
 use get_download_list::*;
+use indicatif::MultiProgress;
 use log::info;
-use std::env::set_var;
 use std::sync::Arc;
 use threadpool::ThreadPool;
 use upload_video::*;
 
 const ERROR_LIST: [&str; 2] = ["-2", "-4"];
-static mut UPLOAD_VIDEO: Vec<String> = Vec::new();
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -26,16 +23,21 @@ async fn main() -> Result<()> {
     info!("整理完成 videos = {:?}", &videos);
     let videos = fliters(videos).await?;
 
-    set_var("RUST_LOG", "info");
+    std::env::set_var("RUST_LOG", "info");
     env_logger::init();
+
     let m = Arc::new(MultiProgress::new());
-    let pool = ThreadPool::new(3);
+    let pool = ThreadPool::new(4);
     for video in videos {
         let m = m.clone();
         pool.execute(move || {
-            futures::executor::block_on(async {
-                video_run(video, Some(m.as_ref().to_owned())).await;
-            })
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    video_run(video, Some(m.as_ref().to_owned())).await;
+                });
         });
     }
 
@@ -50,13 +52,14 @@ async fn video_run(video: Video, multi: Option<MultiProgress>) {
         Some(bv) => bv,
         None => video.bv.clone(),
     };
-    unsafe {
-        UPLOAD_VIDEO.push(this_bv.clone());
-    };
 
     'outer: loop {
         for per in video.range[1..].iter() {
-            loop {
+            'inner: loop {
+                info!("开始上传 {:?}", per);
+                if append_video(per, &video.bv, multi.clone()).await.is_ok() {
+                    break 'inner;
+                }
                 info!("查询{}状态", &this_bv);
                 let json = loop_show_video(&this_bv).await;
                 let state_num = json["archive"]["state"].to_string();
@@ -66,34 +69,23 @@ async fn video_run(video: Video, multi: Option<MultiProgress>) {
                     this_bv = upload_first(&video, multi.clone()).await.unwrap();
                     continue 'outer;
                 }
-                if append_video(per, &video.bv, multi.clone()).await.is_ok() {
-                    break;
-                }
             }
         }
 
-        break;
-    }
-
-    unsafe {
-        let uploaded = UPLOAD_VIDEO.clone();
-        let mut ret = Vec::with_capacity(UPLOAD_VIDEO.len());
-        for bv in uploaded {
-            if bv != this_bv {
-                ret.push(bv);
-            }
-        }
-        UPLOAD_VIDEO = ret;
+        break 'outer;
     }
 }
 
 /*
-fn main(){
-    //let title = "test2".to_string();
-    let filename = "兄弟双状元（3） 斗阵来看戏 2024.07.19 - 厦门卫视.mp4".to_string();
-    let bv = "BV1sz421i7Tf".to_string();
-    let ret=upload_api::show_video(&bv).unwrap();
-    println!("{}",ret["videos"][0]["title"].to_string());
+#[tokio::main]
+async fn main() {
+    download_video(
+        "https://vod1.kxm.xmtv.cn/video/2024/08/21/02b14202e842e32b64237c33e29abb89.mp4",
+        "output.mp4",
+        None,
+    )
+    .await
+    .unwrap();
     //println!("{}",bv);
 }
 */

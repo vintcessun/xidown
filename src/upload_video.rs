@@ -9,6 +9,7 @@ use std::fs;
 use std::fs::remove_file;
 use std::io::Write;
 use std::path::Path;
+use xmtv_api::get_video_url;
 use xmtv_api::VideoUrl;
 use BiliupApi::{VideoInfo, _append_video, _show_video, _upload_video};
 
@@ -25,7 +26,7 @@ pub async fn fliters(videos: Vec<Video>) -> Result<Vec<Video>> {
 
     let pb = ProgressBar::new(videos.len() as u64);
     pb.set_style(ProgressStyle::default_bar()
-    .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")?);
+    .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({per_sec}, {eta})")?);
 
     for video in videos {
         let ret_video = fliter(&video).await.unwrap();
@@ -83,27 +84,27 @@ pub async fn upload_first(video: &Video, multi: Option<MultiProgress>) -> Option
     }
 }
 
-async fn download_video(video: &VideoUrl, multi: Option<MultiProgress>) -> Result<String> {
-    let filename = format!("{}.mp4", &video.name);
-    let url = video.url.as_str();
+pub async fn download_video(url: &str, filename: &str, multi: Option<MultiProgress>) -> Result<()> {
     let path = Path::new(&filename);
-
     let client = Client::new();
+    let request = client.get(url);
+
+    let mut source = request.send().await?;
+
     let total_size = {
-        let resp = client.head(url).send().await?;
-        if resp.status().is_success() {
-            resp.headers()
+        if source.status().is_success() {
+            source
+                .headers()
                 .get(header::CONTENT_LENGTH)
                 .and_then(|ct_len| ct_len.to_str().ok())
                 .and_then(|ct_len| ct_len.parse().ok())
                 .unwrap_or(0)
         } else {
-            return Err(anyhow!("不能下载{} Error: {:?}", url, resp.status(),));
+            return Err(anyhow!("不能下载{} Error: {:?}", url, source.status(),));
         }
     };
+    //println!("total_size = {}", &total_size);
 
-    let client = Client::new();
-    let mut request = client.get(url);
     let pb = ProgressBar::new(total_size);
     let pb = match multi {
         Some(m) => m.add(pb),
@@ -112,21 +113,12 @@ async fn download_video(video: &VideoUrl, multi: Option<MultiProgress>) -> Resul
     pb.set_style(ProgressStyle::default_bar()
     .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")?);
 
-    if path.exists() {
-        let size = path.metadata()?.len().saturating_sub(1);
-        request = request.header(header::RANGE, format!("bytes={}-", size));
-        pb.inc(size);
-    }
-    let mut source = request.send().await?;
-    let mut dest = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut dest = fs::File::create(path)?;
     while let Some(chunk) = source.chunk().await? {
         dest.write_all(&chunk)?;
         pb.inc(chunk.len() as u64);
     }
-    Ok(filename)
+    Ok(())
 }
 
 pub async fn upload_video(video: &VideoUrl, multi: Option<MultiProgress>) -> Result<String> {
@@ -141,7 +133,8 @@ pub async fn upload_video(video: &VideoUrl, multi: Option<MultiProgress>) -> Res
     info!("任务 video = {:?}", &video);
     let filename = format!("{}.mp4", video.name);
     info!("下载到{:?}", &filename);
-    download_video(video, multi.clone()).await?;
+    let url = get_video_url(&video.url)?;
+    download_video(&url, &filename, multi.clone()).await?;
     info!("任务 video = {:?} 下载到{:?}完成", &video, &filename);
     info!("开始上传 video = {:?}", &video);
     let ret = _upload_video(videoinfo, &filename, multi).await?;
@@ -160,7 +153,8 @@ pub async fn append_video(
     info!("任务 video = {:?} 上传到 bv = {:?}", &video, &bv);
     let filename = format!("{}.mp4", video.name);
     info!("下载到{:?}", &filename);
-    download_video(video, multi.clone()).await?;
+    let url = get_video_url(&video.url)?;
+    download_video(&url, &filename, multi.clone()).await?;
     info!("任务 video = {:?} 下载到{:?}完成", &video, &filename);
     info!("开始上传 video = {:?}", &video);
     _append_video(&filename, bv, multi).await?;

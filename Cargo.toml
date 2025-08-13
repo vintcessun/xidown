@@ -8,10 +8,14 @@ anyhow = "1.0"
 indicatif = "0.17.0-rc"
 reqwest = { version = "0.11", features = ["blocking","stream","json"] }
 serde_json = "1.0.120"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "tracing"] }
 url = "2.5.2"
 log = "0.4.22"
 threadpool = "1.8.1"
-BiliupApi = "0.1.4"
+BiliupApi = "0.1.7"
 xmtv_api = "0.1.6"
 env_logger = "0.11.5"
+console-subscriber = "0.4.0"
+async_executors = "0.7.0"
+futures = "0.3.31"
+async-std = "1.13.0"

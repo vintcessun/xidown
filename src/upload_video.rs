@@ -1,7 +1,8 @@
 use crate::get_download_list::Video;
 use anyhow::{anyhow, Result};
+use async_std::task::sleep;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use log::{info, warn};
+use log::{error, info, warn};
 use reqwest::header;
 use reqwest::Client;
 use serde_json::Value;
@@ -9,6 +10,7 @@ use std::fs;
 use std::fs::remove_file;
 use std::io::Write;
 use std::path::Path;
+use std::time::Duration;
 use xmtv_api::get_video_url;
 use xmtv_api::VideoUrl;
 use BiliupApi::{VideoInfo, _append_video, _show_video, _upload_video};
@@ -18,6 +20,8 @@ pub async fn loop_show_video(bv: &String) -> Value {
         if let Ok(ret) = _show_video(bv).await {
             break ret;
         }
+        sleep(Duration::from_secs(60)).await;
+        error!("获取{}失败", &bv);
     }
 }
 
@@ -104,6 +108,8 @@ pub async fn download_video(url: &str, filename: &str, multi: Option<MultiProgre
         }
     };
     //println!("total_size = {}", &total_size);
+    let title = filename.split("斗阵来看戏").collect::<Vec<_>>();
+    let title = title[0];
 
     let pb = ProgressBar::new(total_size);
     let pb = match multi {
@@ -111,7 +117,7 @@ pub async fn download_video(url: &str, filename: &str, multi: Option<MultiProgre
         None => pb,
     };
     pb.set_style(ProgressStyle::default_bar()
-    .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")?);
+    .template(format!("{{spinner:.green}} 下载{:16} [{{elapsed_precise}}] [{{wide_bar:.cyan/blue}}] {{bytes}}/{{total_bytes}} ({{bytes_per_sec}}, {{eta}})",title).as_str())?);
 
     let mut dest = fs::File::create(path)?;
     while let Some(chunk) = source.chunk().await? {

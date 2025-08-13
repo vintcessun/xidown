@@ -7,21 +7,25 @@ use log::info;
 use std::sync::Arc;
 use threadpool::ThreadPool;
 use upload_video::*;
+use BiliupApi::_show_video;
 
-const ERROR_LIST: [&str; 2] = ["-2", "-4"];
-
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let mid: &str = "33906231";
     info!("从mid:{:?}获取", &mid);
-    let videos = get_by_mid(mid).await?;
-
-    info!("获取到videos = {:?}", &videos);
     let urls = xmtv_api::get()?;
-    info!("获取到urls = {:?}", urls);
-    let videos = add_url(videos, urls);
-    info!("整理完成 videos = {:?}", &videos);
-    let videos = fliters(videos).await?;
+    let videos = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let videos = get_by_mid(mid).await.unwrap();
+            info!("获取到videos = {:?}", &videos);
+
+            info!("获取到urls = {:?}", urls);
+            let videos = add_url(videos, urls);
+            info!("整理完成 videos = {:?}", &videos);
+            fliters(videos).await.unwrap()
+        });
 
     std::env::set_var("RUST_LOG", "info");
     env_logger::init();
@@ -37,7 +41,7 @@ async fn main() -> Result<()> {
                 .unwrap()
                 .block_on(async {
                     video_run(video, Some(m.as_ref().to_owned())).await;
-                });
+                })
         });
     }
 
@@ -47,13 +51,13 @@ async fn main() -> Result<()> {
 }
 
 async fn video_run(video: Video, multi: Option<MultiProgress>) {
-    let mut video = video;
-    let mut this_bv = match upload_first(&video, multi.clone()).await {
-        Some(bv) => bv,
-        None => video.bv.clone(),
-    };
+    let mut video = video.clone();
+    'func: loop {
+        let this_bv = match upload_first(&video, multi.clone()).await {
+            Some(bv) => bv,
+            None => video.bv.clone(),
+        };
 
-    'outer: loop {
         for per in video.range[1..].iter() {
             'inner: loop {
                 info!("开始上传 {:?}", per);
@@ -61,18 +65,29 @@ async fn video_run(video: Video, multi: Option<MultiProgress>) {
                     break 'inner;
                 }
                 info!("查询{}状态", &this_bv);
-                let json = loop_show_video(&this_bv).await;
+                let json = match _show_video(&this_bv).await {
+                    Ok(ret) => ret,
+                    Err(_) => {
+                        continue 'inner;
+                    }
+                };
                 let state_num = json["archive"]["state"].to_string();
                 info!("{}状态码为{}", &this_bv, &state_num);
-                if ERROR_LIST.contains(&state_num.as_str()) {
-                    video.bv = "".to_string();
-                    this_bv = upload_first(&video, multi.clone()).await.unwrap();
-                    continue 'outer;
+                if state_num == "-2"
+                    || state_num == "-3"
+                    || state_num == "-4"
+                    || state_num == "-5"
+                    || state_num == "-12"
+                    || state_num == "-16"
+                    || state_num == "-100"
+                {
+                    video.bv.clear();
+                    continue 'func;
                 }
+                break 'inner;
             }
         }
-
-        break 'outer;
+        break 'func;
     }
 }
 

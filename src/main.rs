@@ -1,34 +1,34 @@
 mod get_download_list;
 mod upload_video;
 use anyhow::Result;
+mod biliup_api;
+use biliup_api::show_video;
 use get_download_list::*;
 use indicatif::MultiProgress;
-use log::info;
+use log::{debug, info};
 use std::sync::Arc;
 use threadpool::ThreadPool;
 use upload_video::*;
-use BiliupApi::_show_video;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let mid: &str = "33906231";
     info!("从mid:{:?}获取", &mid);
-    let urls = xmtv_api::get()?;
-    let videos = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let videos = get_by_mid(mid).await.unwrap();
-            info!("获取到videos = {:?}", &videos);
+    let urls = xmtv_api::get().await?;
+    env_logger::Builder::new()
+        .filter_level(log::LevelFilter::Info)
+        .init();
+    let videos = {
+        let videos = get_by_mid(mid).await.unwrap();
+        debug!("获取到videos = {videos:?}");
 
-            info!("获取到urls = {:?}", urls);
-            let videos = add_url(videos, urls);
-            info!("整理完成 videos = {:?}", &videos);
-            fliters(videos).await.unwrap()
-        });
+        debug!("获取到urls = {urls:?}");
+        let videos = add_url(videos, urls);
+        debug!("整理完成 videos = {videos:?}");
+        fliters(videos).await.unwrap()
+    };
 
-    std::env::set_var("RUST_LOG", "info");
-    env_logger::init();
+    info!("整理完成 videos = {videos:?}");
 
     let m = Arc::new(MultiProgress::new());
     let pool = ThreadPool::new(4);
@@ -65,7 +65,7 @@ async fn video_run(video: Video, multi: Option<MultiProgress>) {
                     break 'inner;
                 }
                 info!("查询{}状态", &this_bv);
-                let json = match _show_video(&this_bv).await {
+                let json = match show_video(&this_bv).await {
                     Ok(ret) => ret,
                     Err(_) => {
                         continue 'inner;
@@ -90,17 +90,3 @@ async fn video_run(video: Video, multi: Option<MultiProgress>) {
         break 'func;
     }
 }
-
-/*
-#[tokio::main]
-async fn main() {
-    download_video(
-        "https://vod1.kxm.xmtv.cn/video/2024/08/21/02b14202e842e32b64237c33e29abb89.mp4",
-        "output.mp4",
-        None,
-    )
-    .await
-    .unwrap();
-    //println!("{}",bv);
-}
-*/

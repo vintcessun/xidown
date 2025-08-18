@@ -1,8 +1,9 @@
+use crate::biliup_api::{self, VideoInfo};
 use crate::get_download_list::Video;
 use anyhow::{anyhow, Result};
 use async_std::task::sleep;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use reqwest::header;
 use reqwest::Client;
 use serde_json::Value;
@@ -13,11 +14,10 @@ use std::path::Path;
 use std::time::Duration;
 use xmtv_api::get_video_url;
 use xmtv_api::VideoUrl;
-use BiliupApi::{VideoInfo, _append_video, _show_video, _upload_video};
 
 pub async fn loop_show_video(bv: &String) -> Value {
     loop {
-        if let Ok(ret) = _show_video(bv).await {
+        if let Ok(ret) = biliup_api::show_video(bv).await {
             break ret;
         }
         sleep(Duration::from_secs(60)).await;
@@ -46,7 +46,7 @@ pub async fn fliters(videos: Vec<Video>) -> Result<Vec<Video>> {
 }
 
 async fn fliter(video: &Video) -> Result<Video> {
-    info!("开始确认 video = {:?}", &video);
+    debug!("开始确认 video = {:?}", &video);
     if video.bv.is_empty() {
         Ok(video.clone())
     } else {
@@ -117,7 +117,7 @@ pub async fn download_video(url: &str, filename: &str, multi: Option<MultiProgre
         None => pb,
     };
     pb.set_style(ProgressStyle::default_bar()
-    .template(format!("{{spinner:.green}} 下载{:16} [{{elapsed_precise}}] [{{wide_bar:.cyan/blue}}] {{bytes}}/{{total_bytes}} ({{bytes_per_sec}}, {{eta}})",title).as_str())?);
+    .template(format!("{{spinner:.green}} 下载{title:16} [{{elapsed_precise}}] [{{wide_bar:.cyan/blue}}] {{bytes}}/{{total_bytes}} ({{bytes_per_sec}}, {{eta}})").as_str())?);
 
     let mut dest = fs::File::create(path)?;
     while let Some(chunk) = source.chunk().await? {
@@ -138,16 +138,16 @@ pub async fn upload_video(video: &VideoUrl, multi: Option<MultiProgress>) -> Res
     };
     info!("任务 video = {:?}", &video);
     let filename = format!("{}.mp4", video.name);
-    info!("下载到{:?}", &filename);
-    let url = get_video_url(&video.url)?;
+    debug!("下载到{:?}", &filename);
+    let url = get_video_url(&video.url).await?;
     download_video(&url, &filename, multi.clone()).await?;
-    info!("任务 video = {:?} 下载到{:?}完成", &video, &filename);
+    debug!("任务 video = {:?} 下载到{:?}完成", &video, &filename);
     info!("开始上传 video = {:?}", &video);
-    let ret = _upload_video(videoinfo, &filename, multi).await?;
-    info!("上传完成 video = {:?}", &video);
-    info!("获取到bv号 ret = {:?}", &ret);
+    let ret = biliup_api::upload_video(videoinfo, &filename, multi).await?;
+    debug!("上传完成 video = {:?}", &video);
+    debug!("获取到bv号 ret = {:?}", &ret);
     remove_file(&filename)?;
-    info!("删除文件 filename = {:?}", &filename);
+    debug!("删除文件 filename = {:?}", &filename);
     Ok(ret)
 }
 
@@ -158,14 +158,14 @@ pub async fn append_video(
 ) -> Result<()> {
     info!("任务 video = {:?} 上传到 bv = {:?}", &video, &bv);
     let filename = format!("{}.mp4", video.name);
-    info!("下载到{:?}", &filename);
-    let url = get_video_url(&video.url)?;
+    debug!("下载到{:?}", &filename);
+    let url = get_video_url(&video.url).await?;
     download_video(&url, &filename, multi.clone()).await?;
-    info!("任务 video = {:?} 下载到{:?}完成", &video, &filename);
+    debug!("任务 video = {:?} 下载到{:?}完成", &video, &filename);
     info!("开始上传 video = {:?}", &video);
-    _append_video(&filename, bv, multi).await?;
-    info!("上传完成 video = {:?}", &video);
+    biliup_api::append_video(&filename, bv, multi).await?;
+    debug!("上传完成 video = {:?}", &video);
     remove_file(&filename)?;
-    info!("删除文件 filename = {:?}", &filename);
+    debug!("删除文件 filename = {:?}", &filename);
     Ok(())
 }

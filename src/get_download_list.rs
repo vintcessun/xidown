@@ -1,113 +1,177 @@
 use anyhow::Result;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::ops::Index;
-use url::Url;
 use xmtv_api::VideoUrl;
 
-#[derive(Debug, Clone)]
+use crate::biliup_api::get_cookie;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Video {
     pub title: String,
     pub bv: String,
     pub range: Vec<VideoUrl>,
 }
 
-/*
-##弃用的函数 因为总是从本地读取可能遇到视频被锁后继续上传老视频失败
-pub fn save(filename:&str,video:&Vec<Video>)->Result<(),Box<dyn Error>>{
-    let mut file = File::create(filename)?;
-    for i in video{
-        writeln!(file,"{} {}",i.title,i.bv)?;
-    }
-    Ok(())
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoDisplay {
+    origin: Option<Value>,
+    usr_action_txt: Option<String>,
+    relation: Option<Value>,
+    live_info: Option<Value>,
+    emoji_info: Option<Value>,
+    highlight: Option<Value>,
 }
-*/
 
-fn contain_value(value: &Value, index: &str) -> bool {
-    !matches!(value.index(index), Value::Null)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoDescription {
+    uid: u64,
+    r#type: u8,
+    rid: u128,
+    acl: i64,
+    view: u64,
+    repost: u64,
+    comment: u64,
+    like: u64,
+    is_liked: u64,
+    dynamic_id: u128,
+    timestamp: u64,
+    pre_dy_id: u64,
+    orig_dy_id: u64,
+    orig_type: u64,
+    user_profile: Value,
+    spec_type: u64,
+    uid_type: u64,
+    stype: u64,
+    r_type: u64,
+    inner_id: u64,
+    status: u64,
+    dynamic_id_str: String,
+    pre_dy_id_str: String,
+    orig_dy_id_str: String,
+    rid_str: String,
+    origin: Option<Value>,
+    bvid: String,
+    previous: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoCard {
+    desc: VideoDescription,
+    card: String,
+    extend_json: String,
+    display: VideoDisplay,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchData {
+    total: usize,
+    cards: Vec<VideoCard>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchBody {
+    code: u8, //code非0就是出问题了，可能是请求速度太快了被b站过滤了
+    message: String,
+    data: SearchData,
+    ttl: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoCardInner {
+    aid: u128,
+    cid: u64,
+    ctime: u64,
+    desc: String,
+    dimension: Value,
+    duration: u64,
+    dynamic: String,
+    first_frame: String,
+    jump_url: String,
+    owner: Value,
+    pic: String,
+    pubdate: u64,
+    short_link_v2: String,
+    stat: Value,
+    state: u64,
+    tid: u64,
+    title: String,
+    tname: String,
+    videos: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicCardInner {
+    user: Value,
+    item: Value,
+    origin: Value,
+    origin_extend_json: Value,
+    origin_user: Value,
 }
 
 pub async fn get_by_mid(mid: &str) -> Result<Vec<Video>> {
     let mut i = 1;
-    let mut ret: Vec<Video> = vec![];
+    let mut ret = Vec::new();
     'retry: loop {
-        let page_url = Url::parse(format!("https://api.bilibili.com/x/space/dynamic/search?keyword=%E6%96%97%E9%98%B5%E6%9D%A5%E7%9C%8B%E6%88%8F&pn={}&ps=30&mid={}",i,mid).as_str())?;
-        info!("获取已上传视频 i = {:?}, page_url = {:?}", &i, &page_url);
-        let res = loop {
-            match Client::new()
-            .get(page_url.clone())
-            .header("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36")
-            //.header("cookie","CURRENT_BLACKGAP=0;CURRENT_FNVAL=4048;CURRENT_QUALITY=112;DedeUserID=33906231;DedeUserID__ckMd5=779e057704a961f6;FEED_LIVE_VERSION=V8;PVID=1;SESSDATA=4304a554%2C1733125187%2C47b9a%2A61CjCEaV64s3It3tBx0gRCoCpSW4-YERrsqvQWq3umBv1weQfNXaXk6BelYv0A5ialzIUSVjg4dDF5VFBRTE13a0NhMXJhNUpNdUkyQzRHR2FFa2ZRZGVDRVNobTFTZmpZdXNiVHdyY0JaZUg4RmpDSkYtLTY5Rk14WU5EQXNUWlYtVjhfdWJ1dzVnIIEC;_uuid=2D14F4CA-7F4C-CFA10-FCAA-7FC8BA61963E36151infoc;b_lsid=910E610D2E_18FE755D94C;b_nut=1689656934;bili_jct=3f149a74eabfe364ee9bb2c4b28c7809;bili_ticket=eyJhbGciOiJIUzI1NiIsImtpZCI6InMwMyIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MTc4MzI0NzUsImlhdCI6MTcxNzU3MzIxNSwicGx0IjotMX0.iF9V5oX9CzhSlQCeT54w03LsPLV80JUmeCD249iu5_Q;bili_ticket_expires=1717832415;browser_resolution=1482-708;buvid3=15B751A7-0701-4CB1-6E70-9D9098E8D18834638infoc;buvid4=9C5AAA34-984E-4552-2A59-BE365B73093936163-023071813-2ehoPqLPBEbTk16Vhj%2BUZQ%3D%3D;buvid_fp=df891ad2cbbac3f9b5ea0ca0445bbc64;dy_spec_agreed=1;fingerprint=04c5a12b8b76ab29996f980421b35264;hit-dyn-v2=1;home_feed_column=5")
-            .header("Referer","https://space.bilibili.com/33906231/video")
+        let page_url = format!("https://api.bilibili.com/x/space/dynamic/search?keyword=斗阵来看戏&pn={i}&ps=30&mid={mid}");
+        info!("获取已上传视频 i = {i:?}, page_url = {page_url:?}");
+        let res = match Client::new()
+            .get(page_url)
+            .header("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36")
+            .header("Cookie",get_cookie().await)
             .send()
             .await{
-                Ok(ret)=>{break ret;}
-                Err(_)=>{error!("请求失败，正在重试");}
-            }
-        };
-        info!("请求结果 res = {:?}", &res);
-        let text: String = res.text().await?;
-        debug!("text = {:?}", &text);
-        let json: Value = serde_json::from_str(&text)?;
-        if json["code"] == 0 {
-            let Some(cards) = json["data"]["cards"].as_array() else {
-                continue 'retry;
-            };
-            if cards.is_empty() {
-                info!("已经没有数据");
-                break;
-            }
-            for i in cards {
-                let Some(card) = i["card"].as_str() else {
+                Ok(e)=>e,
+                Err(e)=>{
+                    warn!("错误 {e} 重试...第{i}页");
                     continue 'retry;
-                };
-                let per_card: Value = serde_json::from_str(card)?;
-                if contain_value(&per_card, "title") {
-                    let Some(title) = per_card["title"].as_str() else {
-                        continue 'retry;
-                    };
-                    let title = title.split(' ').collect::<Vec<_>>()[0].to_string();
-                    let Some(bv) = i["desc"]["bvid"].as_str() else {
-                        continue 'retry;
-                    };
-                    let bv = bv.to_string();
-                    let video: Video = Video {
-                        title,
-                        bv,
-                        range: vec![],
-                    };
-                    info!("获取到 video = {:?}", &video);
-                    //println!("{:#?}",video);
-                    ret.push(video);
-                } else if contain_value(&per_card, "item") {
-                    debug!("出现不包含结果的card = {:?}", &card);
-                    let item = per_card["item"].to_string();
-                    warn!("不包含结果 item = {:?}", &item);
-                } else {
-                    error!("出现未识别的card = {:?}", &card);
                 }
-            }
-        }
-        i += 1;
-    }
-    warn!("获取完成 ret = {:?}", &ret);
-    Ok(ret)
-}
+            };
+        debug!("请求结果 res = {res:?}",);
 
-/*
-##弃用的函数 弃用原因和save一样
-pub fn get_by_file(filename:&str)->Result<Vec<Video>,Box<dyn Error>>{
-    let mut ret:Vec<Video>=vec![];
-    for line in read_to_string(filename)?.lines(){
-        let i=line.split(" ").collect::<Vec<_>>();
-        let (title,bv) = (i[0].to_string(),i[1].to_string());
-        let video=Video{title:title,bv:bv,range:vec![]};
-        ret.push(video);
+        let data = res.json::<SearchBody>().await?;
+        debug!("data = {data:?}");
+        if data.code == 0 {
+            let cards = data.data.cards;
+            if cards.is_empty() {
+                break 'retry;
+            }
+            for ele in cards {
+                let card = ele.card;
+                debug!("card = {card}");
+                let per_card = match serde_json::from_str::<VideoCardInner>(&card) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        let dynamic_card = serde_json::from_str::<DynamicCardInner>(&card)
+                            .unwrap_or_else(move |e| {
+                                warn!("解析card错误 第{i}个 {e} card = {card}");
+                                panic!()
+                            });
+                        warn!("解析到动态 {dynamic_card:?} ...跳过 {e}");
+                        i += 1;
+                        continue 'retry;
+                    }
+                };
+                let title = per_card.title;
+                let title = title.split(' ').collect::<Vec<_>>()[0].to_string();
+                let bv = ele.desc.bvid;
+                let video: Video = Video {
+                    title,
+                    bv,
+                    range: Vec::new(),
+                };
+                debug!("获取到 video = {video:?}");
+                ret.push(video);
+            }
+            i += 1;
+        } else {
+            continue 'retry;
+        }
     }
+    info!("获取完成 ret = {ret:?}");
     Ok(ret)
 }
-*/
 
 pub fn add_url(mut videos: Vec<Video>, urls: Vec<VideoUrl>) -> Vec<Video> {
     for url in &urls {
@@ -122,7 +186,7 @@ pub fn add_url(mut videos: Vec<Video>, urls: Vec<VideoUrl>) -> Vec<Video> {
             let mut video = Video {
                 title: url.title.clone(),
                 bv: "".to_string(),
-                range: vec![],
+                range: Vec::new(),
             };
             video.range.push(url.clone());
             videos.push(video);
@@ -132,4 +196,24 @@ pub fn add_url(mut videos: Vec<Video>, urls: Vec<VideoUrl>) -> Vec<Video> {
         video.range.sort_by(|a, b| a.time.cmp(&b.time));
     }
     videos
+}
+
+#[cfg(test)]
+mod test {
+    use crate::biliup_api::get_cookie;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_info() {
+        env_logger::Builder::new()
+            .filter_level(log::LevelFilter::Info)
+            .init();
+        println!("{:?}", get_by_mid("33906231").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_login_info() {
+        println!("{}", get_cookie().await);
+    }
 }

@@ -1,29 +1,30 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::Result;
 use async_static::async_static;
-use biliup::client::{Client, LoginInfo};
-use biliup::video::{BiliBili, Vid, Video};
-use biliup::{line, VideoFile};
+use biliup::bilibili::{BiliBili, Studio, Vid, Video};
+use biliup::client::StatelessClient;
+use biliup::credential::{login_by_cookies, Credential};
+use biliup::uploader::{line, VideoFile};
 use bytes::{Buf, Bytes};
 use futures::{Stream, StreamExt};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use lazy_static::lazy_static;
-use log::error;
+use log::debug;
 use reqwest::Body;
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::Instant;
 
-const COOKIE_FILE: &str = r#"C:\Users\vintc\Desktop\rust\xidown\cookies.json"#;
+const COOKIE_FILE: &str = r#"cookies.json"#;
+const PROXY: Option<&str> = None;
+
 lazy_static! {
-    static ref CLIENT: Arc<Client> = Arc::new(Client::new());
+    static ref CLIENT: Arc<Credential> = Arc::new(Credential::new(PROXY));
 }
 async_static! {
-    static ref LOGININFO: Arc<LoginInfo> = Arc::new(CLIENT.login_by_cookies({
-        fopen_rw(COOKIE_FILE).unwrap()
-    }).await.unwrap());
+    static ref LOGININFO: Arc<BiliBili> = Arc::new(login_by_cookies(COOKIE_FILE,PROXY).await.unwrap());
 }
 
 pub struct VideoInfo {
@@ -37,7 +38,7 @@ pub struct VideoInfo {
 
 pub async fn get_cookie() -> String {
     let mut ret = Vec::new();
-    if let Some(cookies) = LOGININFO.await.cookie_info["cookies"].as_array() {
+    if let Some(cookies) = LOGININFO.await.login_info.cookie_info["cookies"].as_array() {
         for cookie in cookies {
             ret.push(format!(
                 "{}={}",
@@ -53,15 +54,14 @@ pub async fn upload_video(
     filename: &String,
     multi: Option<MultiProgress>,
 ) -> Result<String> {
-    let client = CLIENT.as_ref();
-    let login_info = LOGININFO.await.as_ref();
+    let bilibili = LOGININFO.await.clone();
 
     let uploaded_videos = loop {
-        if let Ok(ret) = upload(&[PathBuf::from(&filename)], client, 10, multi.clone()).await {
+        if let Ok(ret) = upload(&[PathBuf::from(&filename)], 10, multi.clone()).await {
             break ret;
         }
     };
-    let mut builder = biliup::video::Studio::builder()
+    let studio = Studio::builder()
         .desc(video_info.desc)
         .copyright(video_info.copyright)
         .source(video_info.source)
@@ -69,13 +69,17 @@ pub async fn upload_video(
         .tid(video_info.tid)
         .title(video_info.title)
         .videos(uploaded_videos)
+        .desc_v2(None)
         .build();
     //println!("{:?}",uploaded_videos);
     let bv = loop {
-        let ret = &builder.submit(login_info).await;
+        let ret = bilibili.submit_by_app(&studio, PROXY).await;
         if let Ok(result) = ret {
-            let bv = result["data"]["bvid"].to_string();
-            break bv;
+            if let Some(data) = result.data {
+                let bv = data["bvid"].to_string();
+                debug!("获得 bv = {bv}");
+                break bv;
+            }
         }
     };
     //println!("{:?}",ret);
@@ -87,45 +91,36 @@ pub async fn append_video(
     bv: &String,
     multi: Option<MultiProgress>,
 ) -> Result<()> {
-    let client = CLIENT.as_ref();
-    let login_info = LOGININFO.await.as_ref();
+    let bilibili = LOGININFO.await.clone();
     let mut uploaded_videos = loop {
-        if let Ok(ret) = upload(&[PathBuf::from(&filename)], client, 10, multi.clone()).await {
+        if let Ok(ret) = upload(&[PathBuf::from(&filename)], 10, multi.clone()).await {
             break ret;
         }
     };
-    let mut studio = BiliBili::new(login_info, client)
-        .studio_data(Vid::Bvid(bv.to_owned()))
+    let mut studio = bilibili
+        .studio_data(&Vid::Bvid(bv.to_owned()), PROXY)
         .await?;
     studio.videos.append(&mut uploaded_videos);
-    let _ret = studio.edit(login_info).await?;
-    //println!("{}",_ret);
+    let ret = bilibili.edit_by_web(&studio).await?;
+    debug!("{ret}");
     Ok(())
 }
 
 pub async fn show_video(bv: &String) -> Result<Value> {
-    let client = Client::new();
-    let login_info = LOGININFO.await.as_ref();
-    let video_info = match BiliBili::new(login_info, &client)
-        .video_data(Vid::Bvid(bv.to_owned()))
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            error!("{}", e);
-            return Err(anyhow!("Errors {}", e));
-        }
-    };
+    let bilibili = LOGININFO.await.clone();
+    let video_info = bilibili
+        .video_data(&Vid::Bvid(bv.to_owned()), PROXY)
+        .await?;
     Ok(video_info)
 }
 
 async fn upload(
     video_path: &[PathBuf],
-    client: &Client,
     limit: usize,
     multi: Option<MultiProgress>,
 ) -> Result<Vec<Video>> {
     let mut videos = Vec::new();
+    let client = StatelessClient::default();
     let line = line::bda2(); /*match line {
                                  // Some("kodo") => line::kodo(),
                                  // Some("bda2") => line::bda2(),
@@ -148,7 +143,9 @@ async fn upload(
         let video_file = VideoFile::new(video_path)?;
         let total_size = video_file.total_size;
         let file_name = video_file.file_name.clone();
-        let uploader = line.to_uploader(video_file);
+        let uploader = line
+            .pre_upload(&LOGININFO.await.clone(), video_file)
+            .await?;
         //Progress bar
         let pb = ProgressBar::new(total_size);
         let pb = match multi {
@@ -170,14 +167,19 @@ async fn upload(
         //println!("{}",uploader.line.query);
 
         let video = uploader
-            .upload(client, limit, |vs| {
-                vs.map(|chunk| {
-                    let pb = pb.clone();
-                    let chunk = chunk?;
-                    let len = chunk.len();
-                    Ok((Progressbar::new(chunk, pb), len))
-                })
-            })
+            .upload(
+                client.clone(),
+                limit,
+                |vs| {
+                    vs.map(|chunk| {
+                        let pb = pb.clone();
+                        let chunk = chunk?;
+                        let len = chunk.len();
+                        Ok((Progressbar::new(chunk, pb), len))
+                    })
+                },
+                100,
+            )
             .await?;
         pb.finish_and_clear();
         let t = instant.elapsed().as_millis();
@@ -189,6 +191,12 @@ async fn upload(
         videos.push(video);
     }
     Ok(videos)
+}
+
+impl From<Progressbar> for Body {
+    fn from(async_stream: Progressbar) -> Self {
+        Body::wrap_stream(async_stream)
+    }
 }
 
 #[derive(Clone)]
@@ -235,20 +243,4 @@ impl Stream for Progressbar {
             Some(s) => Poll::Ready(Some(Ok(s))),
         }
     }
-}
-
-impl From<Progressbar> for Body {
-    fn from(async_stream: Progressbar) -> Self {
-        Body::wrap_stream(async_stream)
-    }
-}
-
-#[inline]
-fn fopen_rw<P: AsRef<Path>>(path: P) -> Result<std::fs::File> {
-    let path = path.as_ref();
-    std::fs::File::options()
-        .read(true)
-        .write(true)
-        .open(path)
-        .with_context(|| String::from("open cookies file: ") + &path.to_string_lossy())
 }

@@ -60,7 +60,7 @@ async fn video_run(video: Video, multi: Option<MultiProgress>) {
 
         for per in video.range[1..].iter() {
             'inner: loop {
-                info!("开始上传 {:?}", per);
+                info!("开始上传 {per:?}");
                 if append_video(per, &video.bv, multi.clone()).await.is_ok() {
                     break 'inner;
                 }

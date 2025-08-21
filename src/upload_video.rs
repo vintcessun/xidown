@@ -60,7 +60,7 @@ async fn fliter(video: &Video) -> Result<Video> {
             let mut exists = false;
             let videos = match json["videos"].as_array() {
                 Some(ret) => ret,
-                None => &vec![],
+                None => &Vec::new(),
             };
             for j in videos.iter().rev() {
                 if j["title"] == i.name {

@@ -122,13 +122,6 @@ async fn upload(
     let mut videos = Vec::new();
     let client = StatelessClient::default();
     let line = line::bda2(); /*match line {
-                                 // Some("kodo") => line::kodo(),
-                                 // Some("bda2") => line::bda2(),
-                                 // Some("ws") => line::ws(),
-                                 // Some("qn") => line::qn(),
-                                 // Some("cos") => line::cos(),
-                                 // Some("cos-internal") => line::cos_internal(),
-                                 // Some(name) => panic!("不正确的线路{name}"),
                                  Some(UploadLine::Kodo) => line::kodo(),
                                  Some(UploadLine::Bda2) => line::bda2(),
                                  Some(UploadLine::Ws) => line::ws(),

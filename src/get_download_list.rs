@@ -132,44 +132,42 @@ pub async fn get_by_mid(mid: &str) -> Result<Vec<Video>> {
 
         let data = res.json::<SearchBody>().await?;
         debug!("data = {data:?}");
-        if data.code == 0 {
-            let cards = data.data.cards;
-            if cards.is_empty() {
-                break 'retry;
-            }
-            for ele in cards {
-                let card = ele.card;
-                debug!("card = {card}");
-                let per_card = match serde_json::from_str::<VideoCardInner>(&card) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        let dynamic_card = serde_json::from_str::<DynamicCardInner>(&card)
-                            .unwrap_or_else(move |e| {
-                                warn!("解析card错误 第{i}个 {e} card = {card}");
-                                panic!()
-                            });
-                        warn!("解析到动态 {dynamic_card:?} ...跳过 {e}");
-                        i += 1;
-                        continue 'retry;
-                    }
-                };
-                let title = per_card.title;
-                let title = title.split(' ').collect::<Vec<_>>()[0].to_string();
-                let bv = ele.desc.bvid;
-                let video: Video = Video {
-                    title,
-                    bv,
-                    range: Vec::new(),
-                };
-                debug!("获取到 video = {video:?}");
-                ret.push(video);
-            }
-            i += 1;
-        } else {
+        if data.code != 0 {
             continue 'retry;
         }
+        let cards = data.data.cards;
+        if cards.is_empty() {
+            break 'retry;
+        }
+        for ele in cards {
+            let card = ele.card;
+            debug!("card = {card}");
+            let per_card = match serde_json::from_str::<VideoCardInner>(&card) {
+                Ok(e) => e,
+                Err(e) => {
+                    let dynamic_card = serde_json::from_str::<DynamicCardInner>(&card)
+                        .unwrap_or_else(move |e| {
+                            warn!("解析card错误 第{i}个 {e} card = {card}");
+                            panic!()
+                        });
+                    debug!("解析到动态 {dynamic_card:?} ...跳过 {e}");
+                    continue;
+                }
+            };
+            let title = per_card.title;
+            let title = title.split(' ').collect::<Vec<_>>()[0].to_string();
+            let bv = ele.desc.bvid;
+            let video: Video = Video {
+                title,
+                bv,
+                range: Vec::new(),
+            };
+            debug!("获取到 video = {video:?}");
+            ret.push(video);
+        }
+        i += 1;
     }
-    info!("获取完成 ret = {ret:?}");
+    debug!("获取完成 ret = {ret:?}");
     Ok(ret)
 }
 

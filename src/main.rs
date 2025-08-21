@@ -3,21 +3,24 @@ mod upload_video;
 use anyhow::Result;
 mod biliup_api;
 use biliup_api::show_video;
+use chrono::Local;
+use fern::colors::{Color, ColoredLevelConfig};
 use get_download_list::*;
 use indicatif::MultiProgress;
 use log::{debug, info};
+use std::fs::{create_dir_all, File};
+use std::path::Path;
 use std::sync::Arc;
 use threadpool::ThreadPool;
 use upload_video::*;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let urls = xmtv_api::get().await?;
+
+    set_logger().await?;
     let mid: &str = "33906231";
     info!("从mid:{:?}获取", &mid);
-    let urls = xmtv_api::get().await?;
-    env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Info)
-        .init();
     let videos = {
         let videos = get_by_mid(mid).await.unwrap();
         debug!("获取到videos = {videos:?}");
@@ -46,6 +49,57 @@ async fn main() -> Result<()> {
     }
 
     pool.join();
+
+    Ok(())
+}
+
+async fn set_logger() -> Result<()> {
+    // 配置日志级别颜色（仅用于控制台输出）
+    let colors = ColoredLevelConfig::new()
+        .debug(Color::Cyan)
+        .info(Color::Green)
+        .warn(Color::Yellow)
+        .error(Color::Red);
+
+    let console_dispatch = fern::Dispatch::new()
+        .format(move |out, message, record| {
+            out.finish(format_args!(
+                "[{}] [{}] [{}] {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                colors.color(record.level()), // 彩色级别
+                record.target(),
+                message
+            ))
+        })
+        .level(log::LevelFilter::Info)
+        .chain(std::io::stdout()); // 输出到标准输出
+
+    let timestamp = Local::now().timestamp_millis();
+    let log_dir = "./log";
+    let log_filename = format!("{log_dir}/{timestamp}.log");
+
+    if !Path::new(log_dir).exists() {
+        create_dir_all(log_dir)?;
+        info!("日志目录不存在，已创建: {log_dir}");
+    }
+
+    let file_dispatch = fern::Dispatch::new()
+        .format(move |out, message, record| {
+            out.finish(format_args!(
+                "[{}] [{}] [{}] {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                record.level(),
+                record.target(),
+                message
+            ))
+        })
+        .level(log::LevelFilter::Debug)
+        .chain(File::create(log_filename)?);
+
+    fern::Dispatch::new()
+        .chain(console_dispatch)
+        .chain(file_dispatch)
+        .apply()?;
 
     Ok(())
 }

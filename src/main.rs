@@ -7,12 +7,17 @@ use chrono::Local;
 use fern::colors::{Color, ColoredLevelConfig};
 use get_download_list::*;
 use indicatif::MultiProgress;
+use lazy_static::lazy_static;
 use log::{debug, info};
 use std::fs::{create_dir_all, File};
 use std::path::Path;
 use std::sync::Arc;
 use threadpool::ThreadPool;
 use upload_video::*;
+
+lazy_static! {
+    static ref MULTI_PROGRESS: Arc<MultiProgress> = Arc::new(MultiProgress::new());
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -33,10 +38,9 @@ async fn main() -> Result<()> {
 
     info!("整理完成 videos = {videos:?}");
 
-    let m = Arc::new(MultiProgress::new());
     let pool = ThreadPool::new(4);
     for video in videos {
-        let m = m.clone();
+        let m = MULTI_PROGRESS.clone();
         pool.execute(move || {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -63,13 +67,19 @@ async fn set_logger() -> Result<()> {
 
     let console_dispatch = fern::Dispatch::new()
         .format(move |out, message, record| {
-            out.finish(format_args!(
-                "[{}] [{}] [{}] {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-                colors.color(record.level()), // 彩色级别
-                record.target(),
-                message
-            ))
+            // 日志输出前暂停所有进度条
+            MULTI_PROGRESS.suspend(|| {
+                // 格式化日志输出
+                out.finish(format_args!(
+                    "[{}] [{}] [{}] {}",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    colors.color(record.level()), // 彩色级别
+                    record.target(),
+                    message
+                ))
+            });
+
+            // suspend闭包执行完毕后自动恢复进度条
         })
         .level(log::LevelFilter::Info)
         .chain(std::io::stdout()); // 输出到标准输出

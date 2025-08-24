@@ -3444,9 +3444,9 @@ dependencies = [
 
 [[package]]
 name = "xmtv_api"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5211c0008782a332389ee3b405b432c2cc55ec9ad978f9d649bec77ecb4edb9"
+checksum = "c92a4c719625c9ca9cae1a984dd39dcd623d323a811cd75df937a08bfd9300d5"
 dependencies = [
  "anyhow",
  "chrono",

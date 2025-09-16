@@ -9,7 +9,7 @@ use get_download_list::*;
 use indicatif::MultiProgress;
 use lazy_static::lazy_static;
 use log::{debug, info};
-use std::fs::{create_dir_all, File};
+use std::fs::{File, create_dir_all};
 use std::path::Path;
 use std::sync::Arc;
 use threadpool::ThreadPool;
@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
     set_logger().await?;
     let mid: &str = "33906231";
     info!("从mid:{:?}获取", &mid);
-    let videos = {
+    let mut videos = {
         let videos = get_by_mid(mid).await.unwrap();
         debug!("获取到videos = {videos:?}");
 
@@ -35,6 +35,9 @@ async fn main() -> Result<()> {
         debug!("整理完成 videos = {videos:?}");
         fliters(videos).await.unwrap()
     };
+
+    // 按需要上传的视频片段数量排序，数量少的在前
+    videos.sort_by(|a, b| a.range.len().cmp(&b.range.len()));
 
     info!("整理完成 videos = {videos:?}");
 

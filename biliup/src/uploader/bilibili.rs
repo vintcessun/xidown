@@ -663,6 +663,8 @@ impl BiliBili {
 
         let mut all_pages = vec![first_page];
         for page_num in from_page + 1..=to_page {
+            // 稿件多的账号要翻几十页，不歇一下会被投稿中心限流(code -702)
+            tokio::time::sleep(Duration::from_millis(300)).await;
             let page = self.archives(status, page_num).await?;
             all_pages.push(page);
         }

@@ -72,8 +72,16 @@ async fn run_once(ctx: &Ctx, task: &Task, bv: &mut String) -> Result<()> {
         let part_title = video.title.clone().unwrap_or_default();
         let new_bv = bili::submit_new(&meta, vec![video]).await?;
         cleanup(&path).await;
+        // 先记台账再等稿件可查询：万一等待期间进程挂了，
+        // 下次运行也知道这一集已经传过了，不会重复上传
         record(ctx, task, first, &new_bv, &part_title).await?;
         *bv = new_bv;
+
+        // 刚投出去的稿件要过一会儿才能查到，这期间直接追加分P 会失败。
+        // 只有还有后续分P 要追加时才值得等。
+        if task.parts.len() > 1 {
+            bili::wait_until_queryable(bv, Duration::from_secs(300)).await?;
+        }
     }
 
     for part in parts {

@@ -74,6 +74,70 @@ pub async fn list_archives() -> Result<Vec<Archive>> {
     Ok(archives)
 }
 
+/// 按关键词搜稿件。
+///
+/// 投稿前确认"这部戏是不是已经有稿件了"只需要这一个请求，
+/// 而翻完整的稿件列表要二十多页，很容易触发 -702 限流。
+pub async fn search_archives(keyword: &str) -> Result<Vec<(String, String)>> {
+    let b = bili().await?;
+    let cookie = b
+        .login_info
+        .cookie_info
+        .get("cookies")
+        .and_then(|c: &Value| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| match (c["name"].as_str(), c["value"].as_str()) {
+                    (Some(n), Some(v)) => Some(format!("{n}={v}")),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .unwrap_or_default();
+
+    let json: Value = retry_http("搜索稿件", 4, || {
+        let cookie = cookie.clone();
+        async move {
+            reqwest::Client::new()
+                .get("https://member.bilibili.com/x/web/archives")
+                .query(&[
+                    ("status", ARCHIVE_STATUS),
+                    ("pn", "1"),
+                    ("ps", "50"),
+                    ("keyword", keyword),
+                ])
+                .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/63.0.3239.108")
+                .header("Cookie", cookie)
+                .timeout(Duration::from_secs(60))
+                .send()
+                .await?
+                .json::<Value>()
+                .await
+                .map_err(Kind::from)
+        }
+    })
+    .await?;
+
+    if json["code"].as_i64() != Some(0) {
+        return Err(anyhow!("搜索稿件失败: {json}"));
+    }
+    Ok(json["data"]["arc_audits"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| {
+                    let arc = &a["Archive"];
+                    Some((
+                        arc["bvid"].as_str()?.to_string(),
+                        arc["title"].as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 /// 稿件里已有的分P 标题。
 pub async fn part_titles(bv: &str) -> Result<Vec<String>> {
     let json = video_data(bv).await?;
@@ -244,8 +308,19 @@ pub async fn submit_new(meta: &ArchiveMeta, videos: Vec<Video>) -> Result<String
     const ATTEMPTS: usize = 4;
     let mut last = String::new();
 
+    // 投之前先确认这部戏是不是已经有稿件了。稿件列表可能是缓存的、也可能因为
+    // 标题对不上而没匹配到，这一次针对性查询是"不重复投稿"的最后一道保险。
+    match find_archive_by_title(&wanted).await {
+        Ok(Some(bv)) => {
+            warn!("{wanted} 已经存在稿件 {bv}，不再新投一个");
+            return Ok(bv);
+        }
+        Ok(None) => {}
+        Err(e) => warn!("投稿前确认稿件是否已存在失败({e})，继续投稿"),
+    }
+
     for i in 0..ATTEMPTS {
-        // 重试前先确认上一次是不是其实已经投成功了：服务端处理完但响应超时的话，
+        // 重试前再确认一次上一次是不是其实已经投成功了：服务端处理完但响应超时的话，
         // 盲目重试就会平白多出一个稿件——这正是我们要消灭的重复来源。
         if i > 0 {
             match find_archive_by_title(&wanted).await {
@@ -295,12 +370,36 @@ pub async fn submit_new(meta: &ArchiveMeta, videos: Vec<Video>) -> Result<String
 }
 
 /// 按稿件标题精确查找已有稿件，用来判断某次投稿是不是其实已经成功了。
+/// 走关键词搜索而不是翻整个稿件列表，只要一个请求。
 async fn find_archive_by_title(title: &str) -> Result<Option<String>> {
-    let archives = list_archives().await?;
-    Ok(archives
+    let hits = search_archives(title).await?;
+    Ok(hits
         .into_iter()
-        .find(|a| a.title == title)
-        .map(|a| a.bvid))
+        .find(|(_, t)| t == title)
+        .map(|(bv, _)| bv))
+}
+
+/// 等到刚投出去的稿件能被查询为止。
+///
+/// 投稿返回 bv 之后，稿件要过一会儿才会出现在查询接口里，
+/// 这段时间直接去追加分P 会失败。
+pub async fn wait_until_queryable(bv: &str, max_wait: Duration) -> Result<()> {
+    let deadline = Instant::now() + max_wait;
+    let mut wait = Duration::from_secs(5);
+    loop {
+        match video_data(bv).await {
+            Ok(_) => {
+                info!("稿件 {bv} 已可查询");
+                return Ok(());
+            }
+            Err(e) if Instant::now() + wait < deadline => {
+                info!("稿件 {bv} 还查不到（{e}），{wait:?} 后重试");
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(Duration::from_secs(30));
+            }
+            Err(e) => return Err(e.context(format!("等待稿件 {bv} 可查询超时"))),
+        }
+    }
 }
 
 /// 往已有稿件追加分P。
@@ -346,7 +445,30 @@ pub async fn append_parts(bv: &str, mut videos: Vec<Video>) -> Result<()> {
 ///
 /// 遇到 b 站限流（code 601）时等得更久——旧版在这种情况下会原地疯狂重试，
 /// 反而让限流更难解除。
-async fn retry<T, F, Fut>(what: &str, attempts: usize, mut f: F) -> Result<T>
+async fn retry<T, F, Fut>(what: &str, attempts: usize, f: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = std::result::Result<T, Kind>>,
+{
+    retry_http(what, attempts, f).await
+}
+
+/// b 站的限流有两种表现：上传接口的 `Kind::RateLimit`(601)，
+/// 以及投稿中心接口在 body 里返回的 `code: -702 请求频率过高`。
+/// 后者在类型上就是一个普通错误，只能靠文本认出来——但它同样需要长等待，
+/// 用几秒的退避去重试只会一直撞在限流上。
+fn rate_limit_wait(e: &Kind) -> Option<Duration> {
+    match e {
+        Kind::RateLimit { .. } => Some(Duration::from_secs(300)),
+        _ => {
+            let msg = e.to_string();
+            (msg.contains("-702") || msg.contains("请求频率过高"))
+                .then(|| Duration::from_secs(120))
+        }
+    }
+}
+
+async fn retry_http<T, F, Fut>(what: &str, attempts: usize, mut f: F) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = std::result::Result<T, Kind>>,
@@ -356,12 +478,12 @@ where
         match f().await {
             Ok(v) => return Ok(v),
             Err(e) => {
-                let wait = match &e {
-                    Kind::RateLimit { code, message } => {
-                        warn!("{what} 被限流(code {code}): {message}，等待 5 分钟后重试");
-                        Duration::from_secs(300)
+                let wait = match rate_limit_wait(&e) {
+                    Some(w) => {
+                        warn!("{what} 被限流，等待 {w:?} 后重试: {e}");
+                        w
                     }
-                    _ => {
+                    None => {
                         warn!("{what} 第 {} 次失败: {e}", i + 1);
                         Duration::from_secs(2u64.pow(i.min(5) as u32))
                     }

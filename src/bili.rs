@@ -14,6 +14,7 @@ use biliup::bilibili::{Archive, BiliBili, Studio, Vid, Video};
 use biliup::client::StatelessClient;
 use biliup::credential::login_by_cookies;
 use biliup::error::Kind;
+use biliup::uploader::line::Line;
 use biliup::uploader::{VideoFile, line};
 use bytes::{Buf, Bytes};
 use futures::{Stream, StreamExt};
@@ -185,7 +186,11 @@ pub async fn upload_part(
     let mut last: Option<Kind> = None;
 
     for i in 0..ATTEMPTS {
-        match upload_part_once(path, part_title, limit, multi).await {
+        let (line_name, line) = upload_line(i);
+        if i > 0 {
+            info!("改用上传线路 {line_name} 重试");
+        }
+        match upload_part_once(path, part_title, limit, line, multi).await {
             Ok(mut video) => {
                 // 显式指定分P 标题，不让 biliup 从文件名去猜
                 video.title = Some(truncate_title(part_title));
@@ -216,15 +221,33 @@ pub async fn upload_part(
     ))
 }
 
+/// 每次重试换一条上传线路。
+///
+/// 实测过 bda2 整条线路不可用的情况：72 个分片全部 `error sending request`，
+/// 而同一时刻 b 站主站是通的。死磕同一条线路只会把一部戏白白判失败，
+/// 换一条就好了。
+type NamedLine = (&'static str, fn() -> Line);
+
+fn upload_line(attempt: usize) -> (&'static str, Line) {
+    const LINES: &[NamedLine] = &[
+        ("bda2", line::bda2),
+        ("alia", line::alia),
+        ("tx", line::tx),
+        ("bda", line::bda),
+    ];
+    let (name, make) = LINES[attempt % LINES.len()];
+    (name, make())
+}
+
 async fn upload_part_once(
     path: &Path,
     part_title: &str,
     limit: usize,
+    line: Line,
     multi: Option<&MultiProgress>,
 ) -> std::result::Result<Video, Kind> {
     let b = bili().await.map_err(|e| Kind::Custom(e.to_string()))?;
     let client = StatelessClient::default();
-    let line = line::bda2();
 
     let video_file = VideoFile::new(path)?;
     let total_size = video_file.total_size;

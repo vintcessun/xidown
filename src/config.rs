@@ -46,7 +46,9 @@ fn env_flag(key: &str) -> bool {
 pub struct Settings {
     /// 同时处理几部戏
     pub concurrency: usize,
-    /// 单个文件上传时的并发分片数
+    /// 单个文件上传时的并发分片数。
+    /// 家用上行就那么点带宽，开太多只会让每个分片都慢到超时，
+    /// 实测 10 并发时分片全部 error sending request。
     pub upload_limit: usize,
     /// 临时视频文件存放目录
     pub work_dir: PathBuf,
@@ -69,7 +71,7 @@ impl Settings {
     pub fn from_env() -> Self {
         Self {
             concurrency: env_num("XIDOWN_CONCURRENCY", 4usize).max(1),
-            upload_limit: env_num("XIDOWN_UPLOAD_LIMIT", 10usize).max(1),
+            upload_limit: env_num("XIDOWN_UPLOAD_LIMIT", 3usize).max(1),
             work_dir: env_str("XIDOWN_WORK_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("work")),

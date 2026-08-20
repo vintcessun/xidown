@@ -146,6 +146,9 @@ pub struct Studio {
     pub extra_fields: Option<HashMap<String, Value>>,
 }
 
+/// 只有 `cli` feature 下的 clap 参数解析会用到它，不加 cfg 的话
+/// 默认编译就是一段死代码
+#[cfg(feature = "cli")]
 fn parse_extra_fields(s: &str) -> std::result::Result<HashMap<String, Value>, String> {
     serde_json::from_str(s).map_err(|e| e.to_string())
 }

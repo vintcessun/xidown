@@ -54,8 +54,7 @@ pub async fn download(
             info!("Segments array is empty - stream finished");
             break;
         }
-        let mut seq = pl.media_sequence;
-        for segment in &pl.segments {
+        for (seq, segment) in (pl.media_sequence..).zip(pl.segments.iter()) {
             if seq > previous_last_segment {
                 if (previous_last_segment > 0) && (seq > (previous_last_segment + 1)) {
                     warn!("SEGMENT INFO SKIPPED");
@@ -81,7 +80,6 @@ pub async fn download(
                 }
                 previous_last_segment = seq;
             }
-            seq += 1;
         }
         let resp = client.retryable(media_url.as_str()).await?;
         let bs = resp.bytes().await?;

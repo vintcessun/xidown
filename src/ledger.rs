@@ -116,3 +116,91 @@ impl Ledger {
 pub fn now_ts() -> i64 {
     Utc::now().timestamp()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn url(id: u64, name: &str) -> VideoUrl {
+        VideoUrl {
+            title: "甲".into(),
+            name: name.into(),
+            url: String::new(),
+            time: 0,
+            id,
+        }
+    }
+
+    fn tmp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join("xidown_ledger_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(name);
+        std::fs::remove_file(&p).ok();
+        p
+    }
+
+    #[test]
+    fn test_part_key_prefers_stable_id() {
+        assert_eq!(part_key(&url(42, "甲（1）")), "id:42");
+        // 老数据没有 id 时退回标题
+        assert_eq!(part_key(&url(0, "甲（1）")), "name:甲（1）");
+    }
+
+    #[tokio::test]
+    async fn test_record_survives_reload() {
+        let path = tmp("reload.json");
+        let key = part_key(&url(1, "甲（1）"));
+        let entry = Entry {
+            bv: "BV1".into(),
+            part_title: "甲（1）".into(),
+            title: "甲".into(),
+            uploaded_at: 1,
+        };
+
+        {
+            let l = Ledger::load(&path).await.unwrap();
+            assert!(l.contains(&key, Some("BV1")).await.is_none());
+            l.record(key.clone(), entry).await.unwrap();
+        }
+
+        // 重新加载后仍然认得这个分P —— 这正是"再跑一次不会重复上传"的依据
+        let l = Ledger::load(&path).await.unwrap();
+        assert!(l.contains(&key, Some("BV1")).await.is_some());
+        // 目标稿件换了就得重传
+        assert!(l.contains(&key, Some("BV_other")).await.is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn test_forget_archive() {
+        let path = tmp("forget.json");
+        let l = Ledger::load(&path).await.unwrap();
+        for (i, bv) in [(1u64, "BV1"), (2, "BV1"), (3, "BV2")] {
+            l.record(
+                part_key(&url(i, "x")),
+                Entry {
+                    bv: bv.into(),
+                    part_title: "x".into(),
+                    title: "甲".into(),
+                    uploaded_at: 1,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        l.forget_archive("BV1").await.unwrap();
+        assert!(l.contains("id:1", None).await.is_none());
+        assert!(l.contains("id:2", None).await.is_none());
+        assert!(l.contains("id:3", None).await.is_some());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn test_corrupt_ledger_does_not_abort() {
+        let path = tmp("corrupt.json");
+        std::fs::write(&path, b"{ this is not json").unwrap();
+        let l = Ledger::load(&path).await.unwrap();
+        assert!(l.contains("id:1", None).await.is_none());
+        std::fs::remove_file(&path).ok();
+    }
+}

@@ -75,10 +75,48 @@ impl Settings {
 }
 
 /// 按字符（不是字节）截断到 b 站允许的长度。
+///
+/// 必须和 biliup 从文件名推断分P 标题时的行为完全一致：历史上的分P 标题就是那么
+/// 生成的，去重时拿不同的规则去比对，边界长度的标题会被判成"还没传过"而重复上传。
+/// 注意 biliup 那边是 `if len >= 80 { truncate_title(s, 80) }`，而
+/// `truncate_title` 内部又是 `if len <= 80 { 原样返回 }`，两者叠加之后
+/// 正好 80 字是**不截断**的，所以这里用 `<=`。
 pub fn truncate_title(title: &str) -> String {
     if title.chars().count() <= MAX_TITLE_CHARS {
         return title.to_string();
     }
     let kept: String = title.chars().take(MAX_TITLE_CHARS - 3).collect();
     format!("{kept}...")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 复刻 biliup `Parcel::upload` 里推断分P 标题的那段逻辑，
+    /// 用来锁住我们和它的行为一致。
+    fn biliup_part_title(name: &str) -> String {
+        if name.chars().count() >= MAX_TITLE_CHARS {
+            biliup::bilibili::Video::truncate_title(name, MAX_TITLE_CHARS)
+        } else {
+            name.to_string()
+        }
+    }
+
+    #[test]
+    fn test_truncate_title_matches_biliup() {
+        for len in [1usize, 10, 78, 79, 80, 81, 200] {
+            let s: String = "字".repeat(len);
+            assert_eq!(
+                truncate_title(&s),
+                biliup_part_title(&s),
+                "长度 {len} 时两边的截断结果必须一致"
+            );
+        }
+        assert_eq!(truncate_title("白蛇传"), "白蛇传");
+        assert_eq!(
+            truncate_title(&"字".repeat(200)).chars().count(),
+            MAX_TITLE_CHARS
+        );
+    }
 }

@@ -11,34 +11,53 @@ use log::info;
 use qrcode::QrCode;
 use qrcode::render::unicode;
 
+/// 二维码大约 3 分钟就会失效，失效后自动换一个，不用人守着重跑命令。
+const MAX_QRCODE: usize = 10;
+
 pub async fn login() -> Result<()> {
     let credential = Credential::new(PROXY);
+    let mut info = None;
 
-    let value = credential
-        .get_qrcode()
-        .await
-        .map_err(|e| anyhow!("获取二维码失败: {e}"))?;
-    let url = value["data"]["url"]
-        .as_str()
-        .ok_or_else(|| anyhow!("二维码接口没有返回 url: {value}"))?;
+    for round in 1..=MAX_QRCODE {
+        let value = credential
+            .get_qrcode()
+            .await
+            .map_err(|e| anyhow!("获取二维码失败: {e}"))?;
+        let url = value["data"]["url"]
+            .as_str()
+            .ok_or_else(|| anyhow!("二维码接口没有返回 url: {value}"))?
+            .to_string();
 
-    let code = QrCode::new(url.as_bytes()).context("生成二维码失败")?;
-    let rendered = code
-        .render::<unicode::Dense1x2>()
-        .dark_color(unicode::Dense1x2::Light)
-        .light_color(unicode::Dense1x2::Dark)
-        .quiet_zone(true)
-        .build();
+        let code = QrCode::new(url.as_bytes()).context("生成二维码失败")?;
+        let rendered = code
+            .render::<unicode::Dense1x2>()
+            .dark_color(unicode::Dense1x2::Light)
+            .light_color(unicode::Dense1x2::Dark)
+            .quiet_zone(true)
+            .build();
 
-    println!("\n请用 bilibili App 扫描下面的二维码并确认登录：\n");
-    println!("{rendered}");
-    println!("如果终端里的二维码显示不正常，也可以直接在 App 里打开这个链接：\n{url}\n");
-    println!("等待扫码确认中……（确认后会自动继续）");
+        println!("\n请用 bilibili App 扫描下面的二维码并确认登录（第 {round} 个）：\n");
+        println!("{rendered}");
+        println!("二维码显示不正常的话，也可以直接在 App 里打开这个链接：\n{url}\n");
+        println!("等待扫码确认中……（确认后会自动继续；二维码过期会自动换一个）");
 
-    let info = credential
-        .login_by_qrcode(value)
-        .await
-        .map_err(|e| anyhow!("扫码登录失败: {e}"))?;
+        match credential.login_by_qrcode(value).await {
+            Ok(got) => {
+                info = Some(got);
+                break;
+            }
+            // 86038 = 二维码已失效，换一个继续等
+            Err(e) if e.to_string().contains("86038") => {
+                println!("\n上一个二维码已过期，正在换一个……");
+                continue;
+            }
+            Err(e) => return Err(anyhow!("扫码登录失败: {e}")),
+        }
+    }
+
+    let info = info.ok_or_else(|| {
+        anyhow!("连续 {MAX_QRCODE} 个二维码都过期了，没有完成扫码，请重新运行登录命令")
+    })?;
 
     // login_by_qrcode 只返回 LoginInfo，不会自己落盘，这里得手动写
     let file = std::fs::File::create(COOKIE_FILE)

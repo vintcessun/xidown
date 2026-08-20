@@ -50,6 +50,29 @@ fn pick_archive(mut candidates: Vec<Archive>) -> Archive {
     chosen
 }
 
+/// 剧目名 -> 该剧目认定的那一个稿件。纯函数，方便单测。
+fn choose_archives(archives: Vec<Archive>) -> HashMap<String, Archive> {
+    let mut by_title: HashMap<String, Vec<Archive>> = HashMap::new();
+    for a in archives {
+        by_title
+            .entry(title_of_archive(&a.title))
+            .or_default()
+            .push(a);
+    }
+    by_title
+        .into_iter()
+        .map(|(t, v)| (t, pick_archive(v)))
+        .collect()
+}
+
+/// 去掉稿件里已经有的分P。纯函数，方便单测。
+fn drop_existing(parts: Vec<VideoUrl>, existing: &[String]) -> Vec<VideoUrl> {
+    parts
+        .into_iter()
+        .filter(|p| !existing.contains(&truncate_title(&p.name)))
+        .collect()
+}
+
 pub async fn build_plan(settings: &Settings, ledger: &Ledger) -> Result<Vec<Task>> {
     let urls = xmtv_api::get().await?;
     info!("XMTV 片源共 {} 条", urls.len());
@@ -57,14 +80,7 @@ pub async fn build_plan(settings: &Settings, ledger: &Ledger) -> Result<Vec<Task
     info!("按剧目归类后共 {} 部戏", groups.len());
 
     let archives = bili::list_archives().await?;
-    let mut by_title: HashMap<String, Vec<Archive>> = HashMap::new();
-    for a in archives {
-        by_title.entry(title_of_archive(&a.title)).or_default().push(a);
-    }
-    let chosen: HashMap<String, Archive> = by_title
-        .into_iter()
-        .map(|(t, v)| (t, pick_archive(v)))
-        .collect();
+    let chosen = choose_archives(archives);
 
     // 先做本地筛选，再决定要不要为这部戏去查一次 b 站接口
     let mut candidates: Vec<(String, String, Vec<VideoUrl>)> = Vec::new();
@@ -106,10 +122,7 @@ pub async fn build_plan(settings: &Settings, ledger: &Ledger) -> Result<Vec<Task
                     Vec::new()
                 }
             };
-            let parts = parts
-                .into_iter()
-                .filter(|p| !existing.contains(&truncate_title(&p.name)))
-                .collect();
+            let parts = drop_existing(parts, &existing);
             Task { title, bv, parts }
         })
         .buffer_unordered(8)
@@ -174,5 +187,50 @@ mod tests {
         // 全都被打回时退回最早的那个
         let got = pick_archive(vec![archive("BV_b", -2, 200), archive("BV_a", -4, 100)]);
         assert_eq!(got.bvid, "BV_a");
+    }
+
+    /// 同一个剧目名有多个稿件时只能认一个——旧版会往每一个里都塞一遍。
+    #[test]
+    fn test_choose_archives_collapses_duplicates() {
+        let mut a = archive("BV_dup", 0, 300);
+        a.title = "甲 斗阵来看戏".into();
+        let mut b = archive("BV_first", 0, 100);
+        b.title = "甲 斗阵来看戏".into();
+        let mut c = archive("BV_other", 0, 100);
+        c.title = "乙 斗阵来看戏".into();
+
+        let chosen = choose_archives(vec![a, b, c]);
+        assert_eq!(chosen.len(), 2, "两个剧目名只应该有两个条目");
+        assert_eq!(chosen["甲"].bvid, "BV_first");
+        assert_eq!(chosen["乙"].bvid, "BV_other");
+    }
+
+    fn url(name: &str, id: u64) -> VideoUrl {
+        VideoUrl {
+            title: "甲".into(),
+            name: name.into(),
+            url: String::new(),
+            time: id as u128,
+            id,
+        }
+    }
+
+    #[test]
+    fn test_drop_existing() {
+        let parts = vec![url("甲（1）", 1), url("甲（2）", 2), url("甲（3）", 3)];
+        let existing = vec!["甲（1）".to_string(), "甲（3）".to_string()];
+        let got = drop_existing(parts, &existing);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "甲（2）");
+    }
+
+    /// 超长标题在 b 站上是被截断存的，比对时必须用同样的截断规则，
+    /// 否则每次运行都会觉得"还没传过"而重复上传。
+    #[test]
+    fn test_drop_existing_matches_truncated_titles() {
+        let long: String = "字".repeat(200);
+        let parts = vec![url(&long, 1)];
+        let existing = vec![truncate_title(&long)];
+        assert!(drop_existing(parts, &existing).is_empty());
     }
 }

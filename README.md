@@ -22,7 +22,7 @@ cargo run --release
 | --- | --- | --- |
 | `XIDOWN_LOGIN` | - | 设为 1 进入扫码登录模式 |
 | `XIDOWN_DRY_RUN` | - | 设为 1 只输出计划，不下载也不上传 |
-| `XIDOWN_CONCURRENCY` | 4 | 同时处理几部戏。两端都会限流，别开太大 |
+| `XIDOWN_CONCURRENCY` | 1 | 同时处理几部戏。瓶颈在上行，开大了每个分片都会超时 |
 | `XIDOWN_UPLOAD_LIMIT` | 3 | 单个文件上传时的并发分片数，开太大会让每片都超时 |
 | `XIDOWN_WORK_DIR` | `work` | 临时视频文件目录 |
 | `XIDOWN_ONLY_TITLE` | - | 只处理剧目名包含该子串的条目（调试用） |

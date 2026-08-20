@@ -44,7 +44,11 @@ fn env_flag(key: &str) -> bool {
 
 #[derive(Debug, Clone)]
 pub struct Settings {
-    /// 同时处理几部戏
+    /// 同时处理几部戏。
+    /// 默认 1：瓶颈在上行，实测直连上传只有约 0.3 MB/s，
+    /// 同时跑 4 部戏就是 4x3=12 个分片抢同一条上行，每片都会慢到超时，
+    /// 而且要同时占用 4 份几百兆的临时文件空间。
+    /// 上行富裕时再往上调。
     pub concurrency: usize,
     /// 单个文件上传时的并发分片数。
     /// 家用上行就那么点带宽，开太多只会让每个分片都慢到超时，
@@ -70,7 +74,7 @@ pub struct Settings {
 impl Settings {
     pub fn from_env() -> Self {
         Self {
-            concurrency: env_num("XIDOWN_CONCURRENCY", 4usize).max(1),
+            concurrency: env_num("XIDOWN_CONCURRENCY", 1usize).max(1),
             upload_limit: env_num("XIDOWN_UPLOAD_LIMIT", 3usize).max(1),
             work_dir: env_str("XIDOWN_WORK_DIR")
                 .map(PathBuf::from)

@@ -100,7 +100,11 @@ pub async fn search_archives(keyword: &str) -> Result<Vec<Archive>> {
     let json: Value = retry_http("搜索稿件", 4, || {
         let cookie = cookie.clone();
         async move {
-            reqwest::Client::new()
+            reqwest::Client::builder()
+                // 和其它 b 站请求一样不走代理
+                .no_proxy()
+                .build()
+                .map_err(Kind::from)?
                 .get("https://member.bilibili.com/x/web/archives")
                 .query(&[
                     ("status", ARCHIVE_STATUS),

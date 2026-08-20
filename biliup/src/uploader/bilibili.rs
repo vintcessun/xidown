@@ -611,6 +611,8 @@ impl BiliBili {
         jar.add_cookie_str(&cookie, &url);
 
         let res: ResponseData = reqwest::Client::builder()
+            // 和其它请求一样不走代理，否则会自动读 HTTP(S)_PROXY 环境变量
+            .no_proxy()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/63.0.3239.108")
             .cookie_provider(std::sync::Arc::new(jar))
             .timeout(Duration::new(60, 0))

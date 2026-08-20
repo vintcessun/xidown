@@ -153,18 +153,24 @@ async fn cleanup(path: &Path) {
 }
 
 /// 下载到 `xxx.mp4.part` 再改名，半个文件不会被当成下载完成的结果。
+///
+/// 一集正片有好几百兆，中途断流是常态（实测下到 263MB 时连接被掐断，
+/// 紧接着 CDN 还会拒连一段时间）。所以：
+/// - 失败时**保留** `.part`，下次用 Range 断点续传，不重头再来；
+/// - 退避给得足够长，让 CDN 的冷却期过去。
 async fn download(
     url: &str,
     dest: &Path,
     part: &VideoUrl,
     multi: Option<&MultiProgress>,
 ) -> Result<()> {
-    const ATTEMPTS: usize = 4;
+    const ATTEMPTS: usize = 6;
     let tmp = dest.with_extension("mp4.part");
     let mut last: Option<anyhow::Error> = None;
 
     for i in 0..ATTEMPTS {
-        match download_once(url, &tmp, part, multi).await {
+        let have = tokio::fs::metadata(&tmp).await.map(|m| m.len()).unwrap_or(0);
+        match download_once(url, &tmp, have, part, multi).await {
             Ok(()) => {
                 tokio::fs::rename(&tmp, dest)
                     .await
@@ -172,42 +178,64 @@ async fn download(
                 return Ok(());
             }
             Err(e) => {
-                warn!("下载 {} 第 {} 次失败: {e}", part.name, i + 1);
-                tokio::fs::remove_file(&tmp).await.ok();
+                let have = tokio::fs::metadata(&tmp).await.map(|m| m.len()).unwrap_or(0);
+                warn!(
+                    "下载 {} 第 {} 次失败（已下 {:.1} MB，下次断点续传）: {e}",
+                    part.name,
+                    i + 1,
+                    have as f64 / 1024. / 1024.
+                );
                 last = Some(e);
                 if i + 1 < ATTEMPTS {
-                    tokio::time::sleep(Duration::from_secs(2u64.pow(i as u32))).await;
+                    // 15/30/60/120/120 秒——CDN 掐断之后短间隔重连只会一直被拒
+                    tokio::time::sleep(Duration::from_secs(15 * 2u64.pow(i.min(3) as u32))).await;
                 }
             }
         }
     }
+    // 彻底放弃了才清掉半成品，免得占着磁盘
+    tokio::fs::remove_file(&tmp).await.ok();
     Err(last.unwrap_or_else(|| anyhow!("下载 {} 失败", part.name)))
 }
 
+/// 从 `resume_from` 字节处继续下载。返回 Ok 表示文件已经完整。
 async fn download_once(
     url: &str,
     tmp: &Path,
+    resume_from: u64,
     part: &VideoUrl,
     multi: Option<&MultiProgress>,
 ) -> Result<()> {
     // 复用 xmtv_api 里的连接池，别每次都新建一个 Client
-    let mut source = xmtv_api::client()
-        .get(url)
+    let mut req = xmtv_api::client().get(url);
+    if resume_from > 0 {
+        req = req.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+    }
+    let mut source = req
         .send()
         .await?
         .error_for_status()
         .context(format!("下载 {url} 被服务端拒绝"))?;
 
-    let total_size = source
-        .content_length()
-        .or_else(|| {
-            source
-                .headers()
-                .get(reqwest::header::CONTENT_LENGTH)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse().ok())
-        })
-        .unwrap_or(0);
+    let status = source.status();
+    // 206 说明服务端接受了续传；返回 200 表示它忽略了 Range，只能从头来过
+    let resuming = resume_from > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT;
+    if resume_from > 0 && !resuming {
+        warn!("服务端不支持断点续传（返回 {status}），从头开始下载");
+    }
+
+    let total_size = if resuming {
+        // Content-Range: bytes 100-999/1000
+        source
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.rsplit('/').next().map(str::to_string))
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or_else(|| resume_from + source.content_length().unwrap_or(0))
+    } else {
+        source.content_length().unwrap_or(0)
+    };
 
     let pb = ProgressBar::new(total_size);
     let pb = match multi {
@@ -219,11 +247,16 @@ async fn download_once(
         bili::short_label(&part.name)
     ))?);
 
-    let mut written = 0u64;
-    {
-        let file = tokio::fs::File::create(tmp)
-            .await
-            .context(format!("创建 {} 失败", tmp.display()))?;
+    let mut written = if resuming { resume_from } else { 0 };
+    pb.set_position(written);
+
+    let result = async {
+        let file = if resuming {
+            tokio::fs::OpenOptions::new().append(true).open(tmp).await
+        } else {
+            tokio::fs::File::create(tmp).await
+        }
+        .context(format!("打开 {} 失败", tmp.display()))?;
         let mut file = tokio::io::BufWriter::new(file);
         while let Some(chunk) = source.chunk().await? {
             file.write_all(&chunk).await?;
@@ -231,8 +264,12 @@ async fn download_once(
             pb.inc(chunk.len() as u64);
         }
         file.flush().await?;
+        Ok::<_, anyhow::Error>(())
     }
+    .await;
     pb.finish_and_clear();
+    // 出错也要保证已经收到的字节落盘，下次才能接着下
+    result?;
 
     // 截断的下载会让上传出去的视频缺一段，这里必须拦住
     if total_size != 0 && written != total_size {

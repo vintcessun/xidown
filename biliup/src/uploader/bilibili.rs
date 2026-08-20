@@ -580,7 +580,13 @@ impl BiliBili {
     /// 稿件管理
     async fn archives(&self, status: &str, page_num: u32) -> Result<Value> {
         let url_str = "https://member.bilibili.com/x/web/archives";
-        let params = [("status", status), ("pn", &page_num.to_string())];
+        // 显式指定每页条数：不给的话服务端默认一页只有 10 条，
+        // 稿件上千的账号要翻一百多页，光列稿件就要花一分多钟
+        let params = [
+            ("status", status),
+            ("pn", &page_num.to_string()),
+            ("ps", "50"),
+        ];
         let url = reqwest::Url::parse_with_params(url_str, &params).unwrap();
 
         let cookie = self

@@ -9,6 +9,8 @@ use std::path::PathBuf;
 pub const COOKIE_FILE: &str = "cookies.json";
 /// 本地上传台账，用来避免重复上传
 pub const LEDGER_FILE: &str = "uploaded.json";
+/// XMTV 片源列表的本地缓存
+pub const CATALOG_CACHE: &str = "catalog.json";
 /// 节目名，同时用于标题拼接和从稿件标题里反推剧目名
 pub const KEYWORD: &str = "斗阵来看戏";
 /// 投稿分区：戏曲
@@ -56,6 +58,8 @@ pub struct Settings {
     pub max_parts: Option<usize>,
     /// 只输出计划，不下载也不上传
     pub dry_run: bool,
+    /// 片源列表缓存多久（秒），过期才重新去 XMTV 拉
+    pub catalog_ttl: i64,
 }
 
 impl Settings {
@@ -70,6 +74,7 @@ impl Settings {
             max_archives: env_str("XIDOWN_MAX_ARCHIVES").and_then(|s| s.parse().ok()),
             max_parts: env_str("XIDOWN_MAX_PARTS").and_then(|s| s.parse().ok()),
             dry_run: env_flag("XIDOWN_DRY_RUN"),
+            catalog_ttl: env_num("XIDOWN_CATALOG_TTL", 6 * 60 * 60i64),
         }
     }
 }

@@ -7,7 +7,7 @@
 //! 3. 本地台账 + b 站稿件里已有的分P 标题，两边都查。
 
 use crate::bili;
-use crate::config::{KEYWORD, Settings, truncate_title};
+use crate::config::{CATALOG_CACHE, KEYWORD, Settings, truncate_title};
 use crate::ledger::{Ledger, part_key};
 use anyhow::Result;
 use biliup::bilibili::Archive;
@@ -74,10 +74,16 @@ fn drop_existing(parts: Vec<VideoUrl>, existing: &[String]) -> Vec<VideoUrl> {
 }
 
 pub async fn build_plan(settings: &Settings, ledger: &Ledger) -> Result<Vec<Task>> {
-    let urls = xmtv_api::get().await?;
-    info!("XMTV 片源共 {} 条", urls.len());
-    let groups = xmtv_api::sort_by_title(urls);
-    info!("按剧目归类后共 {} 部戏", groups.len());
+    // 片源列表带本地缓存：上游一次返回两千多条，每次运行都去拉容易被限流
+    let catalog = xmtv_api::Videos::cached(CATALOG_CACHE, settings.catalog_ttl).await?;
+    let groups = catalog.videos;
+    info!(
+        "XMTV 片源共 {} 部戏（缓存时间 {}）",
+        groups.len(),
+        chrono::DateTime::from_timestamp(catalog.last_update, 0)
+            .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "未知".into())
+    );
 
     let archives = bili::list_archives().await?;
     let chosen = choose_archives(archives);

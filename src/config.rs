@@ -60,6 +60,8 @@ pub struct Settings {
     pub dry_run: bool,
     /// 片源列表缓存多久（秒），过期才重新去 XMTV 拉
     pub catalog_ttl: i64,
+    /// 稿件已被锁定/打回时，是否重新投一个（默认不投，避免制造重复稿件）
+    pub resubmit_dead: bool,
 }
 
 impl Settings {
@@ -75,6 +77,7 @@ impl Settings {
             max_parts: env_str("XIDOWN_MAX_PARTS").and_then(|s| s.parse().ok()),
             dry_run: env_flag("XIDOWN_DRY_RUN"),
             catalog_ttl: env_num("XIDOWN_CATALOG_TTL", 6 * 60 * 60i64),
+            resubmit_dead: env_flag("XIDOWN_RESUBMIT_DEAD"),
         }
     }
 }

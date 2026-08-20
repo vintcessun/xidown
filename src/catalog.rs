@@ -37,9 +37,13 @@ fn title_of_archive(archive_title: &str) -> String {
 }
 
 /// 同一个剧目名可能对应多个稿件（历史上的重复投稿）。挑一个当作正主：
-/// 优先选没被打回的，其次选最早创建的——后来的那些才是意外多投的。
+/// 优先选没被锁定/打回的，其次选最早创建的——后来的那些才是意外多投的。
+///
+/// 注意判定"废了"要用 `state_is_dead` 而不是 `state < 0`：
+/// 待审(-1)、审核中(-30)、定时发布(-40) 都是正常的中间状态，仍然可以追加分P，
+/// 不该被当成和"被锁定"一样的坏稿件。
 fn pick_archive(mut candidates: Vec<Archive>) -> Archive {
-    candidates.sort_by_key(|a| (a.state < 0, a.ctime));
+    candidates.sort_by_key(|a| (bili::state_is_dead(a.state as i64), a.ctime));
     let chosen = candidates.remove(0);
     for dup in &candidates {
         warn!(
@@ -95,16 +99,41 @@ pub async fn build_plan(settings: &Settings, ledger: &Ledger) -> Result<Vec<Task
 
     // 先做本地筛选，再决定要不要为这部戏去查一次 b 站接口
     let mut candidates: Vec<(String, String, Vec<VideoUrl>)> = Vec::new();
+    let mut skipped_dead = 0usize;
     for group in groups {
         if let Some(f) = &settings.only_title
             && !group.title.contains(f.as_str())
         {
             continue;
         }
-        let bv = chosen
-            .get(&group.title)
-            .map(|a| a.bvid.clone())
-            .unwrap_or_default();
+        let archive = chosen.get(&group.title);
+
+        // 这部戏的稿件已经被锁定/打回：往里追加一定失败，而重新投一个多半也会
+        // 落到同样的下场，只是白白多出一个重复稿件。默认跳过，
+        // 需要强行重投时设 XIDOWN_RESUBMIT_DEAD=1。
+        if let Some(a) = archive
+            && bili::state_is_dead(a.state as i64)
+        {
+            if !settings.resubmit_dead {
+                warn!(
+                    "剧目 {} 的稿件 {} 已失效（state={} {}），本次跳过；\
+                     需要重新投稿请设 XIDOWN_RESUBMIT_DEAD=1",
+                    group.title, a.bvid, a.state, a.state_desc
+                );
+                skipped_dead += 1;
+                continue;
+            }
+            warn!(
+                "剧目 {} 的稿件 {} 已失效（state={} {}），将重新投一个",
+                group.title, a.bvid, a.state, a.state_desc
+            );
+        }
+
+        // 稿件失效且允许重投时，当作没有稿件，走新投稿流程
+        let bv = match archive {
+            Some(a) if !bili::state_is_dead(a.state as i64) => a.bvid.clone(),
+            _ => String::new(),
+        };
 
         let mut parts = Vec::new();
         for part in group.range {
@@ -116,6 +145,9 @@ pub async fn build_plan(settings: &Settings, ledger: &Ledger) -> Result<Vec<Task
         if !parts.is_empty() {
             candidates.push((group.title, bv, parts));
         }
+    }
+    if skipped_dead > 0 {
+        warn!("因为稿件已失效而跳过 {skipped_dead} 部戏");
     }
     info!("台账过滤后还有 {} 部戏需要检查", candidates.len());
 
@@ -198,6 +230,23 @@ mod tests {
         // 全都被打回时退回最早的那个
         let got = pick_archive(vec![archive("BV_b", -2, 200), archive("BV_a", -4, 100)]);
         assert_eq!(got.bvid, "BV_a");
+    }
+
+    /// 审核中(-30)/待审(-1) 是正常的中间状态，仍然能追加分P，
+    /// 不能和"被锁定(-4)"一样被排到后面——否则会去给一部其实好好的戏重新投稿。
+    #[test]
+    fn test_pick_archive_prefers_under_review_over_locked() {
+        let got = pick_archive(vec![
+            archive("BV_locked", -4, 100),
+            archive("BV_reviewing", -30, 200),
+        ]);
+        assert_eq!(got.bvid, "BV_reviewing");
+
+        let got = pick_archive(vec![
+            archive("BV_locked", -4, 100),
+            archive("BV_pending", -1, 200),
+        ]);
+        assert_eq!(got.bvid, "BV_pending");
     }
 
     /// 同一个剧目名有多个稿件时只能认一个——旧版会往每一个里都塞一遍。

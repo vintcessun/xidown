@@ -1,25 +1,50 @@
+[workspace]
+members = ["biliup"]
+
+# 统一整个 workspace 的依赖版本，避免同一个 crate 编译出多份
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9.34"
+serde_urlencoded = "0.7"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+# biliup 使用 rand 0.8 的 thread_rng / distributions API，不要升级到 0.9
+rand = "0.8.5"
+url = "2.5"
+thiserror = "2"
+bytes = "1.10"
+futures = "0.3"
+bon = "3"
+chrono = "0.4"
+regex = "1.11"
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false }
+tracing-subscriber = "0.3"
+anyhow = "1.0"
+log = "0.4"
+indicatif = "0.18"
+
 [package]
 name = "xidown"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0"
-indicatif = "0.17.0-rc"
-reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "macos-system-configuration", "brotli", "gzip", "json", "rustls-tls", "stream"] }
-serde_json = "1.0.120"
-tokio = { version = "1", features = ["full", "tracing"] }
-log = "0.4.22"
-threadpool = "1.8.1"
-env_logger = "0.11.8"
-futures = "0.3.31"
-async-std = "1.13.0"
+anyhow = { workspace = true }
+indicatif = { workspace = true }
+reqwest = { workspace = true, features = ["charset", "http2", "macos-system-configuration", "brotli", "gzip", "json", "rustls-tls", "stream"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
 biliup = { path = "./biliup" }
-async_static = "0.1.3"
-lazy_static = "1.5.0"
-once_cell = "1.21.3"
-bytes = "1.10.1"
-serde = "1.0.219"
-chrono = "0.4.41"
+xmtv_api = { path = "../xmtv_api" }
+once_cell = "1.21"
 fern = { version = "0.7.1", features = ["colored"] }
-xmtv_api = "0.2.2"
+qrcode = { version = "0.14", default-features = false }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

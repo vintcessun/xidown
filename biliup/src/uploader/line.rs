@@ -8,16 +8,12 @@ use serde_json::json;
 use std::ffi::OsStr;
 
 use crate::client::StatelessClient;
-use crate::error::Kind::Custom;
+use crate::error::Kind::{Custom, RateLimit};
 use crate::uploader::bilibili::{BiliBili, Video};
-// use crate::uploader::line::cos::Cos;
-// use crate::uploader::line::kodo::Kodo;
 use crate::uploader::line::upos::Upos;
 use std::time::Instant;
 use tracing::info;
 
-// pub mod cos;
-// pub mod kodo;
 pub mod upos;
 
 pub struct Parcel {
@@ -32,7 +28,6 @@ impl Parcel {
         client: StatelessClient,
         limit: usize,
         progress: F,
-        retry: u32,
     ) -> Result<Video>
     where
         F: FnOnce(VideoStream) -> S,
@@ -40,36 +35,10 @@ impl Parcel {
         B: Into<Body> + Clone,
     {
         let mut video = match self.line {
-            // Bucket::Cos(bucket, enable_internal) => {
-            //     // let bucket = self.pre_upload(client).await?;
-            //     let cos_client = Cos::form_post(client, bucket).await?;
-            //     let chunk_size = 10485760;
-            //     let parts = cos_client
-            //         .upload_stream(
-            //             progress(self.video_file.get_stream(chunk_size)?),
-            //             self.video_file.total_size,
-            //             limit,
-            //             enable_internal,
-            //         )
-            //         .await?;
-            //     cos_client.merge_files(parts).await?
-            // }
-            // Bucket::Kodo(bucket) => {
-            //     // let bucket = self.pre_upload(client).await?;
-            //     let chunk_size = 4194304;
-            //     Kodo::from(client, bucket)
-            //         .await?
-            //         .upload_stream(
-            //             progress(self.video_file.get_stream(chunk_size)?),
-            //             self.video_file.total_size,
-            //             limit,
-            //         )
-            //         .await?
-            // }
             Bucket::Upos(bucket) => {
                 // let bucket: crate::uploader::upos::Bucket = self.pre_upload(client).await?;
                 let chunk_size = bucket.chunk_size;
-                let upos = Upos::from(client, bucket, retry).await?;
+                let upos = Upos::from(client, bucket).await?;
                 let mut parts = Vec::new();
                 let stream = upos
                     .upload_stream(
@@ -87,14 +56,15 @@ impl Parcel {
             }
         };
 
-        if video.title.is_none() {
-            video.title = self
-                .video_file
-                .filepath
-                .file_stem()
-                .and_then(OsStr::to_str)
-                .map(|s| s.to_string())
-        };
+        if video.title.is_none()
+            && let Some(filename) = self.video_file.filepath.file_stem().and_then(OsStr::to_str) {
+                // B站限制分P视频标题不能超过80字符，需要截断
+                video.title = Some(if filename.chars().count() >= 80 {
+                    Video::truncate_title(filename, 80)
+                } else {
+                    filename.to_string()
+                });
+            };
         Ok(video)
     }
 }
@@ -141,18 +111,16 @@ impl Probe {
         } else {
             client
                 .post(url)
-                .body(vec![0; (1024. * 0.1 * 1024.) as usize])
+                .body(vec![0; (1024. * 1024. * 10.) as usize]) // 10MB chunk
         }
     }
 }
 
 enum Bucket {
-    // Cos(cos::Bucket, bool),
-    // Kodo(kodo::Bucket),
     Upos(upos::Bucket),
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Line {
     os: Uploader,
     probe_url: String,
@@ -165,22 +133,21 @@ impl Line {
     pub async fn pre_upload(&self, bili: &BiliBili, video_file: VideoFile) -> Result<Parcel> {
         let total_size = video_file.total_size;
         let file_name = video_file.file_name.clone();
-        // let profile = if let Uploader::Upos = self.os {
-        //     "ugcupos/bup"
-        // } else {
-        //     "ugcupos/bupfetch"
-        // };
-        let profile = "ugcupos/bup";
+        let profile = "ugcupos/bup"; // ugcfx/bup 需上传视频metadata和frame.zip
         let params = json!({
-            "r": self.os,
+            // "probe_version": "20221109",
+            // "upcdn": "",
+            // "zone": "",
+            "name": file_name,
+            "r": self.os, // upos
             "profile": profile,
             "ssl": 0,
-            "version": "2.11.0",
-            "build": 2110000,
-            "name": file_name,
+            "version": "2.14.0",
+            "build": 2140000,
             "size": total_size,
         });
         info!("pre_upload: {}", params);
+
         let response = bili
             .client
             .get(format!(
@@ -190,28 +157,34 @@ impl Line {
             .query(&params)
             .send()
             .await?;
+
         if !response.status().is_success() {
+            let response_text = response.text().await?;
+
+            // 尝试解析JSON错误响应，检测限流错误（code: 601）
+            if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&response_text)
+                && let Some(code) = error_json.get("code").and_then(|c| c.as_i64())
+                    && code == 601 {
+                        let message = error_json
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("上传过快")
+                            .to_string();
+                        // 直接返回限流错误，让调用方决定如何处理
+                        return Err(RateLimit { code, message });
+                    }
+
             return Err(Custom(format!(
                 "Failed to pre_upload from {}",
-                response.text().await?
+                response_text
             )));
         }
+
         match self.os {
             Uploader::Upos => Ok(Parcel {
                 line: Bucket::Upos(response.json().await?),
                 video_file,
             }),
-            // Uploader::Kodo => Ok(Parcel {
-            //     line: Bucket::Kodo(response.json().await?),
-            //     video_file,
-            // }),
-            // Uploader::Bos | Uploader::Gcs => {
-            //     panic!("unsupported")
-            // }
-            // Uploader::Cos => Ok(Parcel {
-            //     line: Bucket::Cos(response.json().await?, self.probe_url == "internal"),
-            //     video_file,
-            // }),
             // _ => {
             //     panic!("unsupported")
             // }
@@ -222,68 +195,13 @@ impl Line {
 impl Default for Line {
     fn default() -> Self {
         Line {
-            os: Uploader::Upos,
-            probe_url: "//upos-cs-upcdnbda2.bilivideo.com/OK".to_string(),
-            query: "probe_version=20221109&upcdn=bda2&zone=cs".to_string(),
             cost: u128::MAX,
+            ..bldsa()
         }
     }
 }
 
-// pub fn kodo() -> Line {
-//     Line {
-//         os: Uploader::Kodo,
-//         query: "bucket=bvcupcdnkodobm&probe_version=20211012".into(),
-//         probe_url: "//up-na0.qbox.me/crossdomain.xml".into(),
-//         cost: 0,
-//     }
-// }
-
-pub fn bda2() -> Line {
-    Line {
-        os: Uploader::Upos,
-        query: "probe_version=20221109&upcdn=bda2&zone=cs".into(),
-        probe_url: "//upos-cs-upcdnbda2.bilivideo.com/OK".into(),
-        cost: 0,
-    }
-}
-
-pub fn ws() -> Line {
-    Line {
-        os: Uploader::Upos,
-        query: "probe_version=20221109&upcdn=ws&zone=cs".into(),
-        probe_url: "//upos-cs-upcdnws.bilivideo.com/OK".into(),
-        cost: 0,
-    }
-}
-
-pub fn qn() -> Line {
-    Line {
-        os: Uploader::Upos,
-        query: "probe_version=20221109&upcdn=qn&zone=cs".into(),
-        probe_url: "//upos-cs-upcdnqn.bilivideo.com/OK".into(),
-        cost: 0,
-    }
-}
-
-// pub fn cos() -> Line {
-//     Line {
-//         os: Uploader::Cos,
-//         query: "&probe_version=20211012&r=cos&profile=ugcupos%2Fbupfetch&ssl=0&version=2.10.4.0&build=2100400&webVersion=2.0.0".into(),
-//         probe_url: "".into(),
-//         cost: 0,
-//     }
-// }
-
-// pub fn cos_internal() -> Line {
-//     Line {
-//         os: Uploader::Cos,
-//         query: "".into(),
-//         probe_url: "internal".into(),
-//         cost: 0,
-//     }
-// }
-
+/// B站自建DSA
 pub fn bldsa() -> Line {
     Line {
         os: Uploader::Upos,
@@ -293,6 +211,77 @@ pub fn bldsa() -> Line {
     }
 }
 
+/// B站自建DSA
+pub fn cnbldsa() -> Line {
+    Line {
+        os: Uploader::Upos,
+        query: "zone=cs&upcdn=cnbldsa&probe_version=20221109".into(),
+        probe_url: "//upos-cs-upcdnbldsa.bilivideo.cn/OK".into(),
+        cost: 0,
+    }
+}
+
+/// B站自建DSA
+pub fn andsa() -> Line {
+    Line {
+        os: Uploader::Upos,
+        query: "zone=cs&upcdn=andsa&probe_version=20221109".into(),
+        probe_url: "//c3350892csdsa.anitama.cn/OK".into(),
+        cost: 0,
+    }
+}
+
+/// B站自建DSA
+pub fn atdsa() -> Line {
+    Line {
+        os: Uploader::Upos,
+        query: "zone=cs&upcdn=atdsa&probe_version=20221109".into(),
+        probe_url: "//c3350892csdsa.anitama.net/OK".into(),
+        cost: 0,
+    }
+}
+
+/// 百度云
+pub fn bda2() -> Line {
+    Line {
+        os: Uploader::Upos,
+        query: "probe_version=20221109&upcdn=bda2&zone=cs".into(),
+        probe_url: "//upos-cs-upcdnbda2.bilivideo.com/OK".into(),
+        cost: 0,
+    }
+}
+
+/// 百度云
+pub fn cnbd() -> Line {
+    Line {
+        os: Uploader::Upos,
+        query: "probe_version=20221109&upcdn=cnbd&zone=cs".into(),
+        probe_url: "//upos-cs-upcdnbd.bilivideo.cn/OK".into(),
+        cost: 0,
+    }
+}
+
+/// 百度云
+pub fn anbd() -> Line {
+    Line {
+        os: Uploader::Upos,
+        query: "probe_version=20221109&upcdn=anbd&zone=cs".into(),
+        probe_url: "//c3350892csbd.anitama.cn/OK".into(),
+        cost: 0,
+    }
+}
+
+/// 百度云
+pub fn atbd() -> Line {
+    Line {
+        os: Uploader::Upos,
+        query: "probe_version=20221109&upcdn=atbd&zone=cs".into(),
+        probe_url: "//c3350892csbd.anitama.net/OK".into(),
+        cost: 0,
+    }
+}
+
+/// 腾讯云EO
 pub fn tx() -> Line {
     Line {
         os: Uploader::Upos,
@@ -302,15 +291,37 @@ pub fn tx() -> Line {
     }
 }
 
-pub fn txa() -> Line {
+/// 腾讯云EO
+pub fn cntx() -> Line {
     Line {
         os: Uploader::Upos,
-        query: "zone=cs&upcdn=txa&probe_version=20221109".into(),
-        probe_url: "//upos-cs-upcdntxa.bilivideo.com/OK".into(),
+        query: "zone=cs&upcdn=cntx&probe_version=20221109".into(),
+        probe_url: "//upos-cs-upcdntx.bilivideo.com/OK".into(),
         cost: 0,
     }
 }
 
+/// 腾讯云EO
+pub fn antx() -> Line {
+    Line {
+        os: Uploader::Upos,
+        query: "zone=cs&upcdn=antx&probe_version=20221109".into(),
+        probe_url: "//c3350892cstx.anitama.cn/OK".into(),
+        cost: 0,
+    }
+}
+
+/// 腾讯云EO
+pub fn attx() -> Line {
+    Line {
+        os: Uploader::Upos,
+        query: "zone=cs&upcdn=attx&probe_version=20221109".into(),
+        probe_url: "//c3350892cstx.anitama.net/OK".into(),
+        cost: 0,
+    }
+}
+
+/// 百度云海外（Cloudflare）
 pub fn bda() -> Line {
     Line {
         os: Uploader::Upos,
@@ -320,6 +331,17 @@ pub fn bda() -> Line {
     }
 }
 
+/// 腾讯云EO海外
+pub fn txa() -> Line {
+    Line {
+        os: Uploader::Upos,
+        query: "zone=cs&upcdn=txa&probe_version=20221109".into(),
+        probe_url: "//upos-cs-upcdntxa.bilivideo.com/OK".into(),
+        cost: 0,
+    }
+}
+
+/// 阿里云海外
 pub fn alia() -> Line {
     Line {
         os: Uploader::Upos,

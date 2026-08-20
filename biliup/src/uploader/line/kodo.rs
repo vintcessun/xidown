@@ -5,7 +5,7 @@ use reqwest::header::{HeaderMap, HeaderName, CONTENT_LENGTH};
 use reqwest::{header, Body};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-
+use std::path::Path;
 use std::str::FromStr;
 
 use crate::client::StatelessClient;
@@ -16,17 +16,15 @@ pub struct Kodo {
     client: StatelessClient,
     bucket: Bucket,
     url: String,
-    retry: u32,
 }
 
 impl Kodo {
-    pub async fn from(client: StatelessClient, bucket: Bucket, retry: u32) -> Result<Self> {
+    pub async fn from(client: StatelessClient, bucket: Bucket) -> Result<Self> {
         let url = format!("https:{}/mkblk", bucket.endpoint); // 视频上传路径
         Ok(Kodo {
             client,
             bucket,
             url,
-            retry,
         })
     }
 
@@ -57,22 +55,19 @@ impl Kodo {
                 let (chunk, len) = chunk?;
                 // let len = chunk.len();
                 // println!("{}", len);
-                let ctx: serde_json::Value = retry(
-                    || async {
-                        let url = format!("{url}/{len}");
-                        let response = client
-                            .post(url)
-                            .header(CONTENT_LENGTH, len)
-                            .header("Authorization", header::HeaderValue::try_from(uptoken)?)
-                            .body(chunk.clone())
-                            .send()
-                            .await?;
-                        response.error_for_status_ref()?;
-                        let res = response.json().await?;
-                        Ok::<_, Kind>(res)
-                    },
-                    self.retry,
-                )
+                let ctx: serde_json::Value = retry(|| async {
+                    let url = format!("{url}/{len}");
+                    let response = client
+                        .post(url)
+                        .header(CONTENT_LENGTH, len)
+                        .header("Authorization", header::HeaderValue::try_from(uptoken)?)
+                        .body(chunk.clone())
+                        .send()
+                        .await?;
+                    response.error_for_status_ref()?;
+                    let res = response.json().await?;
+                    Ok::<_, Kind>(res)
+                })
                 .await?;
 
                 Ok::<_, Kind>((
@@ -125,11 +120,25 @@ impl Kodo {
             Some(x) if x.as_i64().ok_or("kodo fetch err")? != 1 => {
                 return Err(Kind::Custom(result.to_string()));
             }
-            _ => Video {
-                title: None,
-                filename: self.bucket.bili_filename,
-                desc: "".into(),
-            },
+            _ => {
+                let filename = Path::new(&self.bucket.bili_filename)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                // B站限制分P视频标题不能超过80字符，需要截断filename字段
+                let truncated_filename = if filename.chars().count() >= 80 {
+                    Video::truncate_title(filename, 80)
+                } else {
+                    filename.to_string()
+                };
+
+                Video {
+                    title: None,
+                    filename: truncated_filename,
+                    desc: "".into(),
+                }
+            }
         })
     }
 }

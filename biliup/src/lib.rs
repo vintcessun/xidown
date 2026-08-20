@@ -12,10 +12,24 @@ pub mod uploader;
 pub use uploader::bilibili;
 pub use uploader::credential;
 
-pub async fn retry<F, Fut, O, E: std::fmt::Display>(mut f: F, max_retries: u32) -> Result<O, E>
+pub async fn retry<F, Fut, O, E: std::fmt::Display>(f: F) -> Result<O, E>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<O, E>>,
+{
+    retry_with_config(f, 3, None::<fn(&E) -> bool>).await
+}
+
+pub async fn retry_with_config<F, Fut, O, E, P>(
+    mut f: F,
+    max_retries: usize,
+    should_retry: Option<P>,
+) -> Result<O, E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<O, E>>,
+    E: std::fmt::Display,
+    P: Fn(&E) -> bool,
 {
     let mut retries = max_retries;
     let mut wait = 1;
@@ -23,6 +37,12 @@ where
     loop {
         match f().await {
             Err(e) if retries > 0 => {
+                // 如果提供了 should_retry 条件，检查是否应该重试
+                if let Some(ref predicate) = should_retry
+                    && !predicate(&e) {
+                        break Err(e);
+                    }
+
                 retries -= 1;
                 let jitter_factor =
                     UniformFloat::<f64>::sample_single(0., 1., &mut rand::thread_rng());

@@ -18,17 +18,15 @@ pub struct Cos {
     client: StatelessClient,
     bucket: Bucket,
     upload_id: String,
-    retry: u32,
 }
 
 impl Cos {
-    pub async fn form_post(client: StatelessClient, bucket: Bucket, retry: u32) -> Result<Cos> {
+    pub async fn form_post(client: StatelessClient, bucket: Bucket) -> Result<Cos> {
         let upload_id = get_uploadid(&client.client_with_middleware, &bucket).await?;
         Ok(Cos {
             client,
             bucket,
             upload_id,
-            retry,
         })
     }
 
@@ -69,21 +67,18 @@ impl Cos {
                     upload_id,
                     part_number: (i + 1) as u32,
                 };
-                let response = retry(
-                    || async {
-                        let response = client
-                            .put(url)
-                            .header(AUTHORIZATION, &self.bucket.put_auth)
-                            .header(CONTENT_LENGTH, len)
-                            .query(&params)
-                            .body(chunk.clone())
-                            .send()
-                            .await?;
-                        response.error_for_status_ref()?;
-                        Ok::<_, reqwest::Error>(response)
-                    },
-                    self.retry,
-                )
+                let response = retry(|| async {
+                    let response = client
+                        .put(url)
+                        .header(AUTHORIZATION, &self.bucket.put_auth)
+                        .header(CONTENT_LENGTH, len)
+                        .query(&params)
+                        .body(chunk.clone())
+                        .send()
+                        .await?;
+                    response.error_for_status_ref()?;
+                    Ok::<_, reqwest::Error>(response)
+                })
                 .await?;
 
                 // json!({"partNumber": i + 1, "eTag": response.headers().get("Etag")})
@@ -181,14 +176,22 @@ impl Cos {
         if !res.status().is_success() {
             return Err(Kind::Custom(res.text().await?));
         }
+        let filename = Path::new(&self.bucket.bili_filename)
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap();
+
+        // B站限制分P视频标题不能超过80字符，需要截断filename字段
+        let truncated_filename = if filename.chars().count() >= 80 {
+            Video::truncate_title(filename, 80)
+        } else {
+            filename.to_string()
+        };
+
         Ok(Video {
             title: None,
-            filename: Path::new(&self.bucket.bili_filename)
-                .file_stem()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .into(),
+            filename: truncated_filename,
             desc: "".into(),
         })
     }

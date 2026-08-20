@@ -6,24 +6,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
+use bon::Builder;
 use std::fmt::{Display, Formatter};
 use std::num::ParseIntError;
 use std::str::FromStr;
 use std::time::Duration;
 use tracing::{info, warn};
-use typed_builder::TypedBuilder;
 
-#[derive(Serialize, Deserialize, Debug, TypedBuilder)]
-#[builder(field_defaults(default))]
+#[derive(Serialize, Deserialize, Debug, Builder)]
 #[cfg_attr(feature = "cli", derive(clap::Args))]
 pub struct Studio {
     /// 是否转载, 1-自制 2-转载
     #[cfg_attr(feature = "cli", clap(long, default_value = "1"))]
     #[builder(default = 1)]
+    #[serde(default = "default_copyright")]
     pub copyright: u8,
 
     /// 转载来源
     #[cfg_attr(feature = "cli", clap(long, default_value_t))]
+    #[serde(default)]
     pub source: String,
 
     /// 投稿分区
@@ -33,41 +34,44 @@ pub struct Studio {
 
     /// 视频封面
     #[cfg_attr(feature = "cli", clap(long, default_value_t))]
+    #[serde(default)]
     pub cover: String,
 
     /// 视频标题
     #[cfg_attr(feature = "cli", clap(long, default_value_t))]
-    #[builder(!default, setter(into))]
     pub title: String,
 
     #[cfg_attr(feature = "cli", clap(skip))]
+    #[serde(default)]
+    #[builder(default)]
     pub desc_format_id: u32,
 
     /// 视频简介
     #[cfg_attr(feature = "cli", clap(long, default_value_t))]
+    #[serde(default)]
     pub desc: String,
 
     /// 视频简介v2
     #[serde(default)]
-    #[builder(!default)]
     #[cfg_attr(feature = "cli", clap(skip))]
     pub desc_v2: Option<Vec<Credit>>,
 
     /// 空间动态
     #[cfg_attr(feature = "cli", clap(long, default_value_t))]
+    #[serde(default)]
     pub dynamic: String,
 
     #[cfg_attr(feature = "cli", clap(skip))]
     #[serde(default)]
-    #[builder(default, setter(skip))]
+    #[builder(default)]
     pub subtitle: Subtitle,
 
     /// 视频标签，逗号分隔多个tag
     #[cfg_attr(feature = "cli", clap(long, default_value_t))]
+    #[serde(default)]
     pub tag: String,
 
     #[serde(default)]
-    #[builder(!default)]
     #[cfg_attr(feature = "cli", clap(skip))]
     pub videos: Vec<Video>,
 
@@ -77,10 +81,12 @@ pub struct Studio {
 
     #[cfg_attr(feature = "cli", clap(skip))]
     #[serde(default)]
+    #[builder(default)]
     pub open_subtitle: bool,
 
     #[cfg_attr(feature = "cli", clap(long, default_value = "0"))]
     #[serde(default)]
+    #[builder(default)]
     pub interactive: u8,
 
     #[cfg_attr(feature = "cli", clap(long))]
@@ -97,6 +103,7 @@ pub struct Studio {
     /// 是否开启 Hi-Res, 0-关闭 1-开启
     #[cfg_attr(feature = "cli", clap(long = "hires", default_value = "0"))]
     #[serde(default)]
+    #[builder(default)]
     pub lossless_music: u8,
 
     /// 0-允许转载，1-禁止转载
@@ -104,10 +111,15 @@ pub struct Studio {
     #[serde(default)]
     pub no_reprint: u8,
 
+    /// 仅自己可见
+    #[cfg_attr(feature = "cli", clap(long))]
+    #[serde(default)]
+    pub is_only_self: Option<u8>,
+
     /// 是否开启充电, 0-关闭 1-开启
     #[cfg_attr(feature = "cli", clap(long, default_value = "0"))]
     #[serde(default)]
-    pub open_elec: u8,
+    pub charging_pay: u8,
 
     /// aid 要追加视频的 avid
     #[cfg_attr(feature = "cli", clap(skip))]
@@ -134,9 +146,12 @@ pub struct Studio {
     pub extra_fields: Option<HashMap<String, Value>>,
 }
 
-#[allow(dead_code)]
 fn parse_extra_fields(s: &str) -> std::result::Result<HashMap<String, Value>, String> {
     serde_json::from_str(s).map_err(|e| e.to_string())
+}
+
+fn default_copyright() -> u8 {
+    1
 }
 
 #[derive(Default, Debug, Serialize, Deserialize)]
@@ -174,7 +189,7 @@ pub struct Subtitle {
     lan: String,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(PartialEq, Deserialize, Serialize, Debug, Clone)]
 pub struct Credit {
     #[serde(rename(deserialize = "type_id", serialize = "type"))]
     pub type_id: i8,
@@ -182,7 +197,7 @@ pub struct Credit {
     pub biz_id: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Video {
     pub title: Option<String>,
     pub filename: String,
@@ -196,6 +211,19 @@ impl Video {
             filename: filename.into(),
             desc: "".into(),
         }
+    }
+
+    /// 截断标题到指定的最大字符数（默认80个字符，B站限制）
+    pub fn truncate_title(title: &str, max_chars: usize) -> String {
+        // 统计字符数（不是字节数）
+        let char_count = title.chars().count();
+        if char_count <= max_chars {
+            return title.to_string();
+        }
+
+        // 截断到max_chars-3个字符，然后添加"..."
+        let truncated: String = title.chars().take(max_chars - 3).collect();
+        format!("{}...", truncated)
     }
 }
 
@@ -224,8 +252,8 @@ impl FromStr for Vid {
 impl Display for Vid {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Vid::Aid(aid) => write!(f, "aid={aid}"),
-            Vid::Bvid(bvid) => write!(f, "bvid={bvid}"),
+            Vid::Aid(aid) => write!(f, "aid={}", aid),
+            Vid::Bvid(bvid) => write!(f, "bvid={}", bvid),
         }
     }
 }
@@ -241,6 +269,57 @@ impl BiliBili {
     pub async fn submit(&self, studio: &Studio, proxy: Option<&str>) -> Result<ResponseData> {
         warn!("客户端接口已失效, 将使用APP接口");
         self.submit_by_app(studio, proxy).await
+    }
+
+    /// 使用必剪接口投稿
+    pub async fn submit_by_bcut_android(
+        &self,
+        studio: &Studio,
+        proxy: Option<&str>,
+    ) -> Result<ResponseData> {
+        let payload = {
+            let mut payload = json!({
+                "access_key": self.login_info.token_info.access_token,
+                "appkey": crate::credential::AppKeyStore::BCutAndroid.app_key(),
+                "aurora_version": "2.39.0",
+                "build": 2800030,
+                "c_locale": "zh-Hans_CN",
+                "channel": "master",
+                "mobi_app": "android_bbs",
+                "montage_version": "1.42.1.0",
+                "platform": "android",
+                "s_locale": "zh-Hans_CN",
+                "sdk_type": "mon",
+                "ts": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+            });
+
+            let urlencoded = serde_urlencoded::to_string(&payload)?;
+            let sign = crate::credential::Credential::sign(
+                &urlencoded,
+                crate::credential::AppKeyStore::BCutAndroid.appsec(),
+            );
+            payload["sign"] = Value::from(sign);
+            payload
+        };
+
+        let ret: ResponseData = reqwest::Client::proxy_builder(proxy)
+            .user_agent("Mozilla/5.0 os/android model/Mi 10 Pro mobi_app/android_bbs build/2800030 channel/master osVer/13 kernel_version/V14.0.4.0.TJACNXM BiliDroid/5.6.0 (bbcallen@gmail.com)")
+            .timeout(Duration::new(60, 0))
+            .build()?
+            .post("https://member.bilibili.com/x/vu/mvp/add")
+            .query(&payload)
+            .json(studio)
+            .send()
+            .await?
+            .json()
+            .await?;
+        info!("{:?}", ret);
+        if ret.code == 0 {
+            info!("BCUT接口投稿成功");
+            Ok(ret)
+        } else {
+            Err(Kind::Custom(format!("{:?}", ret)))
+        }
     }
 
     pub async fn submit_by_app(
@@ -288,14 +367,14 @@ impl BiliBili {
             info!("APP接口投稿成功");
             Ok(ret)
         } else {
-            Err(Kind::Custom(format!("{ret:?}")))
+            Err(Kind::Custom(format!("{:?}", ret)))
         }
     }
 
-    #[deprecated(note = "no longer working, fallback to `edit_by_web`")]
+    #[deprecated(note = "no longer working, fallback to `edit_by_app`")]
     pub async fn edit(&self, studio: &Studio, proxy: Option<&str>) -> Result<serde_json::Value> {
-        warn!("客户端接口已失效, 将使用网页接口, 忽略代理{proxy:?}");
-        self.edit_by_web(studio).await
+        warn!("客户端接口已失效, 将使用app接口");
+        self.edit_by_app(studio, proxy).await
     }
 
     pub async fn edit_by_web(&self, studio: &Studio) -> Result<serde_json::Value> {
@@ -315,6 +394,55 @@ impl BiliBili {
             .json()
             .await?;
         info!("{}", ret);
+        if ret["code"] == 0 {
+            info!("稿件修改成功");
+            Ok(ret)
+        } else {
+            Err(Kind::Custom(ret.to_string()))
+        }
+    }
+
+    pub async fn edit_by_app(
+        &self,
+        studio: &Studio,
+        proxy: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let payload = {
+            let mut payload = json!({
+                "access_key": self.login_info.token_info.access_token,
+                "appkey": crate::credential::AppKeyStore::BiliTV.app_key(),
+                "build": 7800300,
+                "c_locale": "zh-Hans_CN",
+                "channel": "bili",
+                "disable_rcmd": 0,
+                "mobi_app": "android",
+                "platform": "android",
+                "s_locale": "zh-Hans_CN",
+                "statistics": "\"appId\":1,\"platform\":3,\"version\":\"7.80.0\",\"abtest\":\"\"",
+                "ts": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+            });
+
+            let urlencoded = serde_urlencoded::to_string(&payload)?;
+            let sign = crate::credential::Credential::sign(
+                &urlencoded,
+                crate::credential::AppKeyStore::BiliTV.appsec(),
+            );
+            payload["sign"] = Value::from(sign);
+            payload
+        };
+
+        let ret: Value = reqwest::Client::proxy_builder(proxy)
+            .user_agent("Mozilla/5.0 BiliDroid/7.80.0 (bbcallen@gmail.com) os/android model/MI 6 mobi_app/android build/7800300 channel/bili innerVer/7800310 osVer/13 network/2")
+            .timeout(Duration::new(60, 0))
+            .build()?
+            .post("https://member.bilibili.com/x/vu/app/edit/full")
+            .query(&payload)
+            .json(studio)
+            .send()
+            .await?
+            .json()
+            .await?;
+        info!("{:?}", ret);
         if ret["code"] == 0 {
             info!("稿件修改成功");
             Ok(ret)
@@ -489,7 +617,7 @@ impl BiliBili {
                 code: _,
                 data: None,
                 ..
-            } => Err(Kind::Custom(format!("{res:?}"))),
+            } => Err(Kind::Custom(format!("{:?}", res))),
             ResponseData {
                 code: _,
                 data: Some(v),

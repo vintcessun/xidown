@@ -13,7 +13,7 @@ use crate::client::StatelessClient;
 pub async fn download(
     url: &str,
     client: &StatelessClient,
-    file: LifecycleFile,
+    file: LifecycleFile<'_>,
     mut splitting: Segmentable,
 ) -> Result<()> {
     info!("Downloading {}...", url);
@@ -46,7 +46,7 @@ pub async fn download(
             info!("index {}", pl.media_sequence);
             pl
         }
-        Err(e) => panic!("Parsing error: \n{e}"),
+        Err(e) => panic!("Parsing error: \n{}", e),
     };
     let mut previous_last_segment = 0;
     loop {
@@ -108,13 +108,13 @@ async fn download_to_file(url: Url, client: &StatelessClient, out: &mut impl Wri
     Ok(length)
 }
 
-pub struct TsFile {
+pub struct TsFile<'a> {
     pub buf_writer: BufWriter<File>,
-    pub file: LifecycleFile,
+    pub file: LifecycleFile<'a>,
 }
 
-impl TsFile {
-    pub fn new(mut file: LifecycleFile) -> std::io::Result<Self> {
+impl<'a> TsFile<'a> {
+    pub fn new(mut file: LifecycleFile<'a>) -> std::io::Result<Self> {
         let path = file.create()?;
         Ok(Self {
             buf_writer: Self::create(path)?,
@@ -145,7 +145,7 @@ impl TsFile {
     }
 }
 
-impl Drop for TsFile {
+impl Drop for TsFile<'_> {
     fn drop(&mut self) {
         self.file.rename()
     }
@@ -153,11 +153,10 @@ impl Drop for TsFile {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
     use reqwest::Url;
 
     #[test]
-    fn test_url() -> Result<()> {
+    fn test_url() -> Result<(), Box<dyn std::error::Error>> {
         let url = Url::parse("h://host.path/to/remote/resource.m3u8")?;
         let scheme = url.scheme();
         let new_url = url.join("http://path.host/remote/resource.ts")?;
@@ -167,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn it_works() -> Result<()> {
+    fn it_works() -> Result<(), Box<dyn std::error::Error>> {
         // download(
         //     "test.ts")?;
         Ok(())

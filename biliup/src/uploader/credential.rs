@@ -15,7 +15,7 @@ use rsa::{Pkcs1v15Encrypt, RsaPublicKey, pkcs8::DecodePublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::info;
+use tracing::{debug, info};
 use url::Url;
 
 // const APP_KEY: &str = "ae57252b0c09105d";
@@ -33,6 +33,7 @@ use url::Url;
 pub(crate) enum AppKeyStore {
     BiliTV,
     Android,
+    BCutAndroid,
 }
 
 impl AppKeyStore {
@@ -40,6 +41,7 @@ impl AppKeyStore {
         match self {
             AppKeyStore::BiliTV => "4409e2ce8ffd12b8",
             AppKeyStore::Android => "783bbb7264451d82",
+            AppKeyStore::BCutAndroid => "5dce947fe22167f9",
         }
     }
 
@@ -47,6 +49,7 @@ impl AppKeyStore {
         match self {
             AppKeyStore::BiliTV => "59b43e04ad6965f34319062b478f83dd",
             AppKeyStore::Android => "2653583c8873dea268ab9386918b1d65",
+            AppKeyStore::BCutAndroid => "5491a31c6bc11fb764a9b1f8d4acf092",
         }
     }
 }
@@ -60,7 +63,7 @@ pub fn bilibili_from_cookies(file: impl AsRef<Path>, proxy: Option<&str>) -> Res
 pub fn bilibili_from_info(login_info: LoginInfo, proxy: Option<&str>) -> Result<BiliBili> {
     let client = Credential::new(proxy);
     client.set_cookie(&login_info.cookie_info);
-    info!("通过cookie登录");
+    debug!("通过cookie登录");
     Ok(BiliBili {
         client: client.0.client,
         login_info,
@@ -82,7 +85,7 @@ pub async fn login_by_cookies(file: impl AsRef<Path>, proxy: Option<&str>) -> Re
         serde_json::to_writer_pretty(std::io::BufWriter::new(&file), &new_info)?;
         bilibili_from_info(new_info, proxy)
     } else {
-        info!("无需更新cookie");
+        debug!("无需更新cookie");
         bilibili_from_info(login_info, proxy)
     }
 }
@@ -110,7 +113,7 @@ pub struct LoginInfo {
 pub struct TokenInfo {
     pub access_token: String,
     expires_in: u32,
-    mid: u64,
+    pub mid: u64,
     refresh_token: String,
 }
 
@@ -171,7 +174,7 @@ impl Credential {
             _ => return Err(Kind::Custom(response.to_string())),
         };
 
-        info!("验证cookie");
+        debug!("验证cookie");
         Ok(refresh)
     }
 
@@ -382,7 +385,7 @@ impl Credential {
 
         let urlencoded = serde_urlencoded::to_string(&payload)?;
         let sign = Self::sign(&urlencoded, AppKeyStore::Android.appsec());
-        let urlencoded = format!("{urlencoded}&sign={sign}");
+        let urlencoded = format!("{}&sign={}", urlencoded, sign);
         // let mut form = payload.clone();
         // form["sign"] = Value::from(sign);
         let res: ResponseData<ResponseValue> = self
@@ -483,7 +486,7 @@ impl Credential {
                 let buvid4 = value["b_4"].as_str().ok_or("cannot find b_4")?.to_owned();
                 Ok((buvid3, buvid4))
             }
-            None => Err(Kind::Custom(format!("cannot find buvid: {res:#?}"))),
+            None => Err(Kind::Custom(format!("cannot find buvid: {:#?}", res))),
         }
     }
 
@@ -591,7 +594,7 @@ impl Credential {
             "csrf": bili_jct,
             "scanning_type": 3,
         });
-        let cookies = format!("SESSDATA={sess_data}; bili_jct={bili_jct}");
+        let cookies = format!("SESSDATA={}; bili_jct={}", sess_data, bili_jct);
         info!("自动确认二维码");
         let response = self.0.client
             .post("https://passport.bilibili.com/x/passport-tv-login/h5/qrcode/confirm")
@@ -614,7 +617,7 @@ impl Credential {
     pub fn sign(param: &str, app_sec: &str) -> String {
         let mut hasher = Md5::new();
         // process input message
-        hasher.update(format!("{param}{app_sec}"));
+        hasher.update(format!("{}{}", param, app_sec));
         // acquire hash digest in the form of GenericArray,
         // which in this case is equivalent to [u8; 16]
         format!("{:x}", hasher.finalize())

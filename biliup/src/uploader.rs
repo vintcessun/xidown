@@ -1,4 +1,5 @@
 use crate::uploader::bilibili::Studio;
+use crate::uploader::util::SubmitOption;
 use crate::{Stream, error};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -13,8 +14,9 @@ use std::task::{Context, Poll};
 pub mod bilibili;
 pub mod credential;
 pub mod line;
+pub mod util;
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum Uploader {
     Upos,
@@ -41,6 +43,8 @@ pub struct Config {
     pub line: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: usize,
+    #[serde(default = "default_submit")]
+    pub submit: SubmitOption,
     pub streamers: HashMap<String, Studio>,
 }
 
@@ -48,10 +52,29 @@ fn default_limit() -> usize {
     3
 }
 
+fn default_submit() -> SubmitOption {
+    SubmitOption::App
+}
+
 pub fn load_config(config: &Path) -> error::Result<Config> {
-    let file = std::fs::File::open(config)?;
-    let config: Config = serde_yaml::from_reader(file)?;
-    // println!("body = {:?}", client);
+    let file = std::fs::File::open(config).map_err(|e| {
+        error::Kind::Custom(format!("无法打开配置文件 '{}': {}", config.display(), e))
+    })?;
+
+    let config: Config = serde_yaml::from_reader(file)
+        .map_err(|e| {
+            let location = e.location()
+                .map(|loc| format!(" (第 {} 行，第 {} 列)", loc.line(), loc.column()))
+                .unwrap_or_default();
+            error::Kind::Custom(
+                format!(
+                    "配置文件 '{}' 格式错误{}: {}\n\n提示：请检查 YAML 格式是否正确（缩进、冒号、引号等），参考示例: examples/config.yaml.example",
+                    config.display(),
+                    location,
+                    e
+                )
+            )
+        })?;
     Ok(config)
 }
 

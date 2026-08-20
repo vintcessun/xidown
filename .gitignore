@@ -2,4 +2,7 @@
 cookies.json
 run.bat
 *.mp4
+*.part
 /log
+/work
+uploaded.json

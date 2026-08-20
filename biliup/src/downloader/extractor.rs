@@ -51,14 +51,14 @@ pub enum Extension {
     Ts,
 }
 
-pub type CallbackFn = Box<dyn Fn(&str) + Send>;
+pub type CallbackFn<'a> = Box<dyn FnMut(&str) + Send + Sync + 'a>;
 
 impl Site {
     pub async fn download(
         &mut self,
         fmt_file_name: &str,
         segment: Segmentable,
-        hook: Option<CallbackFn>,
+        _hook: Option<CallbackFn<'_>>,
     ) -> downloader::error::Result<()> {
         let fmt_file_name = fmt_file_name.replace("{title}", &self.title);
         self.client
@@ -67,14 +67,14 @@ impl Site {
         info!("{}", self);
         match self.extension {
             Extension::Flv => {
-                let file = LifecycleFile::new(&fmt_file_name, "flv", hook);
+                let file = LifecycleFile::new(&fmt_file_name, "flv");
                 let response = self.client.retryable(&self.direct_url).await?;
                 let mut connection = Connection::new(response);
                 connection.read_frame(9).await?;
                 httpflv::parse_flv(connection, file, segment).await?
             }
             Extension::Ts => {
-                let file = LifecycleFile::new(&fmt_file_name, "ts", hook);
+                let file = LifecycleFile::new(&fmt_file_name, "ts");
                 hls::download(&self.direct_url, &self.client, file, segment).await?
             }
         }

@@ -1,67 +1,130 @@
-mod get_download_list;
-mod upload_video;
-use anyhow::Result;
-mod biliup_api;
-use biliup_api::show_video;
-use chrono::Local;
-use fern::colors::{Color, ColoredLevelConfig};
-use get_download_list::*;
-use indicatif::MultiProgress;
-use lazy_static::lazy_static;
-use log::{debug, info};
-use std::fs::{File, create_dir_all};
-use std::path::Path;
-use std::sync::Arc;
-use threadpool::ThreadPool;
-use upload_video::*;
+mod bili;
+mod catalog;
+mod config;
+mod ledger;
+mod login;
+mod worker;
 
-lazy_static! {
-    static ref MULTI_PROGRESS: Arc<MultiProgress> = Arc::new(MultiProgress::new());
-}
+use anyhow::{Context, Result};
+use chrono::Local;
+use config::{LEDGER_FILE, Settings};
+use fern::colors::{Color, ColoredLevelConfig};
+use indicatif::MultiProgress;
+use ledger::Ledger;
+use log::{error, info, warn};
+use once_cell::sync::Lazy;
+use std::fs::{File, create_dir_all};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
+use worker::Ctx;
+
+static MULTI_PROGRESS: Lazy<Arc<MultiProgress>> = Lazy::new(|| Arc::new(MultiProgress::new()));
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let urls = xmtv_api::get().await?;
+    // 日志必须先装好，否则前面几步的输出全丢了
+    let log_path = set_logger()?;
+    info!("日志写入 {log_path}");
 
-    set_logger().await?;
-    let mid: &str = "33906231";
-    info!("从mid:{:?}获取", &mid);
-    let mut videos = {
-        let videos = get_by_mid(mid).await.unwrap();
-        debug!("获取到videos = {videos:?}");
+    // token 过期时唯一的出路是重新扫码登录，单独走一个模式
+    if std::env::var("XIDOWN_LOGIN").is_ok_and(|v| !v.trim().is_empty() && v != "0") {
+        return login::login().await;
+    }
 
-        debug!("获取到urls = {urls:?}");
-        let videos = add_url(videos, urls);
-        debug!("整理完成 videos = {videos:?}");
-        fliters(videos).await.unwrap()
-    };
+    let settings = Settings::from_env();
+    info!("运行参数 {settings:?}");
+    create_dir_all(&settings.work_dir)
+        .context(format!("创建工作目录 {} 失败", settings.work_dir.display()))?;
 
-    // 按需要上传的视频片段数量排序，数量少的在前
-    videos.sort_by(|a, b| a.range.len().cmp(&b.range.len()));
+    // 先确认账号能用，别等下载完几个 G 才发现 cookie 过期
+    bili::probe_login().await?;
 
-    info!("整理完成 videos = {videos:?}");
+    let ledger = Arc::new(Ledger::load(LEDGER_FILE).await?);
+    let tasks = catalog::build_plan(&settings, &ledger).await?;
 
-    let pool = ThreadPool::new(4);
-    for video in videos {
-        let m = MULTI_PROGRESS.clone();
-        pool.execute(move || {
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(async {
-                    video_run(video, Some(m.as_ref().to_owned())).await;
-                })
+    let total_parts: usize = tasks.iter().map(|t| t.parts.len()).sum();
+    info!(
+        "计划：{} 部戏，共 {} 个分P 需要上传",
+        tasks.len(),
+        total_parts
+    );
+    for t in &tasks {
+        info!(
+            "  {} [{}] {} 个分P: {}",
+            t.title,
+            if t.bv.is_empty() { "新投稿" } else { &t.bv },
+            t.parts.len(),
+            t.parts
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        );
+    }
+
+    if tasks.is_empty() {
+        info!("没有需要上传的内容，结束");
+        return Ok(());
+    }
+    if settings.dry_run {
+        info!("XIDOWN_DRY_RUN 已开启，只输出计划，不下载也不上传");
+        return Ok(());
+    }
+
+    let ctx = Arc::new(Ctx {
+        settings: settings.clone(),
+        ledger: ledger.clone(),
+        multi: MULTI_PROGRESS.clone(),
+    });
+
+    // 旧版是 threadpool 里给每个任务单独 build 一个多线程 tokio runtime，
+    // 4 个任务就有 4 套线程池。这里直接用主 runtime 上的任务 + 信号量限流。
+    let sem = Arc::new(Semaphore::new(settings.concurrency));
+    let mut set = JoinSet::new();
+    for task in tasks {
+        let ctx = ctx.clone();
+        let sem = sem.clone();
+        set.spawn(async move {
+            let _permit = sem.acquire_owned().await.expect("信号量不会被关闭");
+            let title = task.title.clone();
+            let parts = task.parts.len();
+            match worker::run_task(ctx, task).await {
+                Ok(()) => {
+                    info!("{title} 完成，共 {parts} 个分P");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("{title} 失败: {e:#}");
+                    Err(title)
+                }
+            }
         });
     }
 
-    pool.join();
+    let mut failed = Vec::new();
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok(Ok(())) => {}
+            Ok(Err(title)) => failed.push(title),
+            Err(e) => {
+                error!("任务 panic: {e}");
+                failed.push(format!("<panic: {e}>"));
+            }
+        }
+    }
 
-    Ok(())
+    if failed.is_empty() {
+        info!("全部完成");
+        Ok(())
+    } else {
+        warn!("以下 {} 部戏没有处理完: {}", failed.len(), failed.join(", "));
+        // 部分失败不算整体失败，下次运行会靠台账续上
+        Ok(())
+    }
 }
 
-async fn set_logger() -> Result<()> {
-    // 配置日志级别颜色（仅用于控制台输出）
+fn set_logger() -> Result<String> {
     let colors = ColoredLevelConfig::new()
         .debug(Color::Cyan)
         .info(Color::Green)
@@ -70,90 +133,52 @@ async fn set_logger() -> Result<()> {
 
     let console_dispatch = fern::Dispatch::new()
         .format(move |out, message, record| {
-            // 日志输出前暂停所有进度条
+            // 打日志前先把进度条收起来，免得两边互相覆盖
             MULTI_PROGRESS.suspend(|| {
-                // 格式化日志输出
                 out.finish(format_args!(
                     "[{}] [{}] [{}] {}",
-                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-                    colors.color(record.level()), // 彩色级别
+                    Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    colors.color(record.level()),
                     record.target(),
                     message
                 ))
             });
-
-            // suspend闭包执行完毕后自动恢复进度条
         })
         .level(log::LevelFilter::Info)
-        .chain(std::io::stdout()); // 输出到标准输出
+        .chain(std::io::stdout());
 
-    let timestamp = Local::now().timestamp_millis();
     let log_dir = "./log";
-    let log_filename = format!("{log_dir}/{timestamp}.log");
-
-    if !Path::new(log_dir).exists() {
-        create_dir_all(log_dir)?;
-        info!("日志目录不存在，已创建: {log_dir}");
-    }
+    create_dir_all(log_dir)?;
+    let log_filename = format!("{log_dir}/{}.log", Local::now().format("%Y%m%d-%H%M%S"));
 
     let file_dispatch = fern::Dispatch::new()
         .format(move |out, message, record| {
             out.finish(format_args!(
                 "[{}] [{}] [{}] {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                Local::now().format("%Y-%m-%d %H:%M:%S"),
                 record.level(),
                 record.target(),
                 message
             ))
         })
         .level(log::LevelFilter::Debug)
-        .chain(File::create(log_filename)?);
+        .chain(File::create(&log_filename)?);
 
     fern::Dispatch::new()
         .chain(console_dispatch)
         .chain(file_dispatch)
         .apply()?;
 
-    Ok(())
-}
-
-async fn video_run(video: Video, multi: Option<MultiProgress>) {
-    let mut video = video.clone();
-    'func: loop {
-        let this_bv = match upload_first(&video, multi.clone()).await {
-            Some(bv) => bv,
-            None => video.bv.clone(),
-        };
-
-        for per in video.range[1..].iter() {
-            'inner: loop {
-                info!("开始上传 {per:?}");
-                if append_video(per, &video.bv, multi.clone()).await.is_ok() {
-                    break 'inner;
-                }
-                info!("查询{}状态", &this_bv);
-                let json = match show_video(&this_bv).await {
-                    Ok(ret) => ret,
-                    Err(_) => {
-                        continue 'inner;
-                    }
-                };
-                let state_num = json["archive"]["state"].to_string();
-                info!("{}状态码为{}", &this_bv, &state_num);
-                if state_num == "-2"
-                    || state_num == "-3"
-                    || state_num == "-4"
-                    || state_num == "-5"
-                    || state_num == "-12"
-                    || state_num == "-16"
-                    || state_num == "-100"
-                {
-                    video.bv.clear();
-                    continue 'func;
-                }
-                break 'inner;
-            }
-        }
-        break 'func;
+    // biliup 内部用的是 tracing，不接进来的话上传失败时看不到任何细节。
+    // 单独写一个文件，避免它的 INFO 刷屏把进度条冲掉。
+    let tracing_filename = format!("{log_dir}/{}.biliup.log", Local::now().format("%Y%m%d-%H%M%S"));
+    if let Ok(f) = File::create(&tracing_filename) {
+        let _ = tracing_subscriber::fmt()
+            .with_writer(std::sync::Mutex::new(f))
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .try_init();
     }
+
+    Ok(log_filename)
 }

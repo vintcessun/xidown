@@ -1,5 +1,64 @@
 # 一个从xmtv上自动下载戏曲并且上传到bilibili的脚本
 
+## 用法
+
+```bash
+# 首次使用 / cookie 过期时：扫码登录，凭据写入 cookies.json
+XIDOWN_LOGIN=1 cargo run --release
+
+# 先看一眼这次打算传什么，不下载也不上传
+XIDOWN_DRY_RUN=1 cargo run --release
+
+# 正式跑
+cargo run --release
+```
+
+中断了直接重跑就行：已经传过的分P 记在 `uploaded.json` 里，不会重复上传；
+下了一半的文件保留在 `work/` 下，下次断点续传。
+
+## 可调参数（环境变量）
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `XIDOWN_LOGIN` | - | 设为 1 进入扫码登录模式 |
+| `XIDOWN_DRY_RUN` | - | 设为 1 只输出计划，不下载也不上传 |
+| `XIDOWN_CONCURRENCY` | 4 | 同时处理几部戏。两端都会限流，别开太大 |
+| `XIDOWN_UPLOAD_LIMIT` | 10 | 单个文件上传时的并发分片数 |
+| `XIDOWN_WORK_DIR` | `work` | 临时视频文件目录 |
+| `XIDOWN_ONLY_TITLE` | - | 只处理剧目名包含该子串的条目（调试用） |
+| `XIDOWN_MAX_ARCHIVES` | - | 最多处理几部戏 |
+| `XIDOWN_MAX_PARTS` | - | 每部戏最多传几个分P |
+| `XIDOWN_CATALOG_TTL` | 21600 | 片源列表缓存秒数，过期才重新去 XMTV 拉 |
+| `XIDOWN_RESUBMIT_DEAD` | - | 稿件被锁定时是否重新投一个（默认不投） |
+
+## 怎么保证不重复上传
+
+历史上这个账号出现过同一部戏有二十多个重复稿件的情况，所以去重做了四层：
+
+1. **XMTV 侧**：按接口返回的稳定 id 去重；
+2. **稿件侧**：同一个剧目名只认一个稿件（优先没被锁定的、其次最早创建的），
+   而不是往每一个同名稿件里都塞一遍；
+3. **本地台账** `uploaded.json`：每次上传成功立刻落盘，
+   b 站刚投的稿件查询接口有延迟，光靠查接口会重复上传；
+4. **投稿前针对性查重**：新投稿之前按标题搜一次，
+   服务端处理成功但响应超时的情况下也不会平白多出一个稿件。
+
+## 模块
+
+| 文件 | 职责 |
+| --- | --- |
+| `config.rs` | 常量和环境变量 |
+| `login.rs` | 扫码登录 |
+| `bili.rs` | 登录、查稿件、上传分P、投稿、追加分P |
+| `catalog.rs` | 片源列表和已有稿件对账，算出要传什么 |
+| `worker.rs` | 单部戏的下载 -> 上传 -> 投稿/追加 -> 记台账 |
+| `ledger.rs` | 本地上传台账 |
+
+`biliup/` 是 [biliup-rs](https://github.com/biliup/biliup-rs) 的 vendored 副本，
+本仓库是它的 workspace 根。
+
+---------------------------
+
 2025.8.22更新
 
 这个项目好久没用了，最近开始上传视频顺便把这个项目修一下，另外[vintcessun/xmtv_api](https://github.com/vintcessun/xmtv_api)那个库也修了，现在来看引入sql增加了不必要的复杂度。

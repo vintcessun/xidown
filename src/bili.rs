@@ -478,29 +478,50 @@ fn rate_limit_wait(e: &Kind) -> Option<Duration> {
     }
 }
 
+/// 被限流时最多总共等这么久。b 站投稿中心的 -702 实测能持续十几分钟，
+/// 要是让它占掉普通重试的次数，一次限流就会把整轮跑批打断。
+const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(30 * 60);
+
 async fn retry_http<T, F, Fut>(what: &str, attempts: usize, mut f: F) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = std::result::Result<T, Kind>>,
 {
     let mut last: Option<Kind> = None;
-    for i in 0..attempts {
+    let mut tries = 0usize;
+    let mut waited = Duration::ZERO;
+
+    while tries < attempts {
         match f().await {
             Ok(v) => return Ok(v),
             Err(e) => {
-                let wait = match rate_limit_wait(&e) {
-                    Some(w) => {
-                        warn!("{what} 被限流，等待 {w:?} 后重试: {e}");
-                        w
+                match rate_limit_wait(&e) {
+                    // 限流不算失败次数，只受总等待时长限制——等下去总会好，
+                    // 而普通错误重试几次还不行就该报出来
+                    Some(w) if waited + w <= MAX_RATE_LIMIT_WAIT => {
+                        waited += w;
+                        warn!(
+                            "{what} 被限流，等待 {w:?} 后重试（累计已等 {waited:?}）: {e}"
+                        );
+                        last = Some(e);
+                        tokio::time::sleep(w).await;
+                    }
+                    Some(_) => {
+                        return Err(anyhow!(
+                            "{what} 被限流累计等待超过 {MAX_RATE_LIMIT_WAIT:?} 仍未恢复: {e}"
+                        ));
                     }
                     None => {
-                        warn!("{what} 第 {} 次失败: {e}", i + 1);
-                        Duration::from_secs(2u64.pow(i.min(5) as u32))
+                        tries += 1;
+                        warn!("{what} 第 {tries} 次失败: {e}");
+                        last = Some(e);
+                        if tries < attempts {
+                            tokio::time::sleep(Duration::from_secs(
+                                2u64.pow(tries.min(5) as u32),
+                            ))
+                            .await;
+                        }
                     }
-                };
-                last = Some(e);
-                if i + 1 < attempts {
-                    tokio::time::sleep(wait).await;
                 }
             }
         }

@@ -379,13 +379,18 @@ async fn adopt_existing(bv: &str, videos: Vec<Video>) -> Result<String> {
     Ok(bv.to_string())
 }
 
-/// 按稿件标题精确查找已有稿件，用来判断某次投稿是不是其实已经成功了。
+/// 按稿件标题精确查找**还有效的**已有稿件，
+/// 用来判断某次投稿是不是其实已经成功了。
 /// 走关键词搜索而不是翻整个稿件列表，只要一个请求。
+///
+/// 这里必须排除没发出去的稿件（state=-4 之类）：上层正是因为旧稿件没发出去
+/// 才决定重新投一个，如果这里把那个坏稿件认出来当成"已存在"，
+/// 就会把分P 追加回坏稿件里，重投也就白做了。
 async fn find_archive_by_title(title: &str) -> Result<Option<String>> {
     let hits = search_archives(title).await?;
     Ok(hits
         .into_iter()
-        .find(|a| a.title == title)
+        .find(|a| a.title == title && !state_is_dead(a.state as i64))
         .map(|a| a.bvid))
 }
 

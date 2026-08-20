@@ -108,28 +108,27 @@ pub async fn build_plan(settings: &Settings, ledger: &Ledger) -> Result<Vec<Task
         }
         let archive = chosen.get(&group.title);
 
-        // 这部戏的稿件已经被锁定/打回：往里追加一定失败，而重新投一个多半也会
-        // 落到同样的下场，只是白白多出一个重复稿件。默认跳过，
-        // 需要强行重投时设 XIDOWN_RESUBMIT_DEAD=1。
+        // state=-4 之类是"没发出去"，这种稿件里的内容并没有真的上线，
+        // 重新投一个才是对的——多投几次总有能过审的。
+        // 只有明确要求时才跳过（XIDOWN_SKIP_DEAD=1）。
         if let Some(a) = archive
             && bili::state_is_dead(a.state as i64)
         {
-            if !settings.resubmit_dead {
+            if settings.skip_dead {
                 warn!(
-                    "剧目 {} 的稿件 {} 已失效（state={} {}），本次跳过；\
-                     需要重新投稿请设 XIDOWN_RESUBMIT_DEAD=1",
+                    "剧目 {} 的稿件 {} 未发出（state={} {}），按 XIDOWN_SKIP_DEAD 跳过",
                     group.title, a.bvid, a.state, a.state_desc
                 );
                 skipped_dead += 1;
                 continue;
             }
-            warn!(
-                "剧目 {} 的稿件 {} 已失效（state={} {}），将重新投一个",
+            info!(
+                "剧目 {} 的稿件 {} 未发出（state={} {}），重新投一个",
                 group.title, a.bvid, a.state, a.state_desc
             );
         }
 
-        // 稿件失效且允许重投时，当作没有稿件，走新投稿流程
+        // 稿件没发出去就当作还没有稿件，走新投稿流程
         let bv = match archive {
             Some(a) if !bili::state_is_dead(a.state as i64) => a.bvid.clone(),
             _ => String::new(),
@@ -282,6 +281,20 @@ mod tests {
         let got = drop_existing(parts, &existing);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].name, "甲（2）");
+    }
+
+    /// 没发出去的稿件不能被当成"已经有稿件了"：上层正是因为它没发出去才要重投，
+    /// 要是把它认成正主，分P 就会被追加回那个坏稿件，重投等于白做。
+    #[test]
+    fn test_dead_archive_is_not_treated_as_usable() {
+        let mut dead = archive("BV_dead", -4, 100);
+        dead.title = "甲 斗阵来看戏".into();
+        let chosen = choose_archives(vec![dead]);
+        let picked = &chosen["甲"];
+        assert!(
+            bili::state_is_dead(picked.state as i64),
+            "-4 必须被判定为没发出去，这样才会走重新投稿"
+        );
     }
 
     /// 超长标题在 b 站上是被截断存的，比对时必须用同样的截断规则，

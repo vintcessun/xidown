@@ -70,8 +70,11 @@ async fn run_once(ctx: &Ctx, task: &Task, bv: &mut String) -> Result<()> {
             .ok_or_else(|| anyhow!("{} 没有需要上传的分P", task.title))?;
         let (video, path) = fetch_and_upload(ctx, first).await?;
         let part_title = video.title.clone().unwrap_or_default();
-        let new_bv = bili::submit_new(&meta, vec![video]).await?;
+        // 不管投稿成没成功，本地这个几百兆的文件都得删掉，
+        // 否则跑一晚上失败几次磁盘就满了
+        let submitted = bili::submit_new(&meta, vec![video]).await;
         cleanup(&path).await;
+        let new_bv = submitted?;
         // 先记台账再等稿件可查询：万一等待期间进程挂了，
         // 下次运行也知道这一集已经传过了，不会重复上传
         record(ctx, task, first, &new_bv, &part_title).await?;
@@ -97,8 +100,9 @@ async fn run_once(ctx: &Ctx, task: &Task, bv: &mut String) -> Result<()> {
         }
         let (video, path) = fetch_and_upload(ctx, part).await?;
         let part_title = video.title.clone().unwrap_or_default();
-        bili::append_parts(bv, vec![video]).await?;
+        let appended = bili::append_parts(bv, vec![video]).await;
         cleanup(&path).await;
+        appended?;
         record(ctx, task, part, bv, &part_title).await?;
     }
     Ok(())
@@ -176,6 +180,16 @@ async fn download(
     let tmp = dest.with_extension("mp4.part");
     let mut last: Option<anyhow::Error> = None;
 
+    // 上一轮下完了但上传失败的文件还留在这儿，别再下一遍几百兆
+    if let Ok(meta) = tokio::fs::metadata(dest).await
+        && meta.len() > 0
+        && let Ok(Some(remote)) = remote_size(url).await
+        && meta.len() == remote
+    {
+        info!("{} 已经下载完整（{} 字节），跳过下载", dest.display(), remote);
+        return Ok(());
+    }
+
     for i in 0..ATTEMPTS {
         let have = tokio::fs::metadata(&tmp).await.map(|m| m.len()).unwrap_or(0);
         match download_once(url, &tmp, have, part, multi).await {
@@ -204,6 +218,22 @@ async fn download(
     // 彻底放弃了才清掉半成品，免得占着磁盘
     tokio::fs::remove_file(&tmp).await.ok();
     Err(last.unwrap_or_else(|| anyhow!("下载 {} 失败", part.name)))
+}
+
+/// 问一下服务端这个文件多大。用 Range 只取 1 个字节，比 HEAD 更可靠
+/// （这个 CDN 对 HEAD 的响应并不总是带 Content-Length）。
+async fn remote_size(url: &str) -> Result<Option<u64>> {
+    let resp = xmtv_api::client()
+        .get(url)
+        .header(reqwest::header::RANGE, "bytes=0-0")
+        .send()
+        .await?;
+    Ok(resp
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.rsplit('/').next().map(str::to_string))
+        .and_then(|v| v.parse::<u64>().ok()))
 }
 
 /// 从 `resume_from` 字节处继续下载。返回 Ok 表示文件已经完整。

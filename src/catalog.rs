@@ -85,7 +85,12 @@ pub async fn build_plan(settings: &Settings, ledger: &Ledger) -> Result<Vec<Task
             .unwrap_or_else(|| "未知".into())
     );
 
-    let archives = bili::list_archives().await?;
+    // 只跑一部戏时按关键词搜就够了。翻完整的稿件列表在稿件上千的账号上要二十多页，
+    // 很容易撞上投稿中心的 -702 限流，而做端到端验证时根本用不着整份列表。
+    let archives = match &settings.only_title {
+        Some(kw) => bili::search_archives(kw).await?,
+        None => bili::list_archives().await?,
+    };
     let chosen = choose_archives(archives);
 
     // 先做本地筛选，再决定要不要为这部戏去查一次 b 站接口

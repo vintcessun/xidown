@@ -78,7 +78,7 @@ pub async fn list_archives() -> Result<Vec<Archive>> {
 ///
 /// 投稿前确认"这部戏是不是已经有稿件了"只需要这一个请求，
 /// 而翻完整的稿件列表要二十多页，很容易触发 -702 限流。
-pub async fn search_archives(keyword: &str) -> Result<Vec<(String, String)>> {
+pub async fn search_archives(keyword: &str) -> Result<Vec<Archive>> {
     let b = bili().await?;
     let cookie = b
         .login_info
@@ -122,20 +122,16 @@ pub async fn search_archives(keyword: &str) -> Result<Vec<(String, String)>> {
     if json["code"].as_i64() != Some(0) {
         return Err(anyhow!("搜索稿件失败: {json}"));
     }
-    Ok(json["data"]["arc_audits"]
+    let hits: Vec<Archive> = json["data"]["arc_audits"]
         .as_array()
         .map(|arr| {
             arr.iter()
-                .filter_map(|a| {
-                    let arc = &a["Archive"];
-                    Some((
-                        arc["bvid"].as_str()?.to_string(),
-                        arc["title"].as_str()?.to_string(),
-                    ))
-                })
+                .filter_map(|a| serde_json::from_value(a["Archive"].clone()).ok())
                 .collect()
         })
-        .unwrap_or_default())
+        .unwrap_or_default();
+    info!("按关键词 {keyword:?} 搜到 {} 个稿件", hits.len());
+    Ok(hits)
 }
 
 /// 稿件里已有的分P 标题。
@@ -295,7 +291,8 @@ pub async fn submit_new(meta: &ArchiveMeta, videos: Vec<Video>) -> Result<String
         .desc(meta.desc.clone())
         .dynamic(String::new())
         .tag(meta.tag.clone())
-        .videos(videos)
+        // 留一份原始的 videos：万一发现稿件其实已经存在，要把它追加过去而不是丢掉
+        .videos(videos.clone())
         .no_reprint(0)
         .dolby(0)
         .charging_pay(0)
@@ -310,27 +307,17 @@ pub async fn submit_new(meta: &ArchiveMeta, videos: Vec<Video>) -> Result<String
 
     // 投之前先确认这部戏是不是已经有稿件了。稿件列表可能是缓存的、也可能因为
     // 标题对不上而没匹配到，这一次针对性查询是"不重复投稿"的最后一道保险。
-    match find_archive_by_title(&wanted).await {
-        Ok(Some(bv)) => {
-            warn!("{wanted} 已经存在稿件 {bv}，不再新投一个");
-            return Ok(bv);
-        }
-        Ok(None) => {}
-        Err(e) => warn!("投稿前确认稿件是否已存在失败({e})，继续投稿"),
+    if let Some(bv) = existing_archive(&wanted).await {
+        return adopt_existing(&bv, videos).await;
     }
 
     for i in 0..ATTEMPTS {
         // 重试前再确认一次上一次是不是其实已经投成功了：服务端处理完但响应超时的话，
         // 盲目重试就会平白多出一个稿件——这正是我们要消灭的重复来源。
-        if i > 0 {
-            match find_archive_by_title(&wanted).await {
-                Ok(Some(bv)) => {
-                    warn!("{wanted} 其实已经投稿成功了({bv})，不再重复提交");
-                    return Ok(bv);
-                }
-                Ok(None) => {}
-                Err(e) => warn!("重试前确认稿件是否已存在失败({e})，继续重试投稿"),
-            }
+        if i > 0
+            && let Some(bv) = existing_archive(&wanted).await
+        {
+            return adopt_existing(&bv, videos).await;
         }
 
         match b.submit_by_app(&studio, PROXY).await {
@@ -369,14 +356,37 @@ pub async fn submit_new(meta: &ArchiveMeta, videos: Vec<Video>) -> Result<String
     Err(anyhow!("投稿 {wanted} 重试 {ATTEMPTS} 次仍然失败: {last}"))
 }
 
+/// 查不到就当作不存在——查询本身失败不该阻止投稿。
+async fn existing_archive(wanted: &str) -> Option<String> {
+    match find_archive_by_title(wanted).await {
+        Ok(found) => found,
+        Err(e) => {
+            warn!("确认稿件 {wanted} 是否已存在时失败({e})，按不存在处理");
+            None
+        }
+    }
+}
+
+/// 稿件已经存在时，把这次**已经上传好**的分P 追加进去，而不是直接丢掉。
+///
+/// 这里很容易写错：如果只是 `return Ok(bv)`，上层会把这一集记进台账当作已完成，
+/// 可是它根本没挂到任何稿件上，这一集就永远丢了。
+/// `append_parts` 内部会跳过标题已存在的分P，所以重复调用是安全的。
+async fn adopt_existing(bv: &str, videos: Vec<Video>) -> Result<String> {
+    warn!("稿件 {bv} 已存在，把本次上传的分P 追加进去，而不是新投一个");
+    wait_until_queryable(bv, Duration::from_secs(300)).await?;
+    append_parts(bv, videos).await?;
+    Ok(bv.to_string())
+}
+
 /// 按稿件标题精确查找已有稿件，用来判断某次投稿是不是其实已经成功了。
 /// 走关键词搜索而不是翻整个稿件列表，只要一个请求。
 async fn find_archive_by_title(title: &str) -> Result<Option<String>> {
     let hits = search_archives(title).await?;
     Ok(hits
         .into_iter()
-        .find(|(_, t)| t == title)
-        .map(|(bv, _)| bv))
+        .find(|a| a.title == title)
+        .map(|a| a.bvid))
 }
 
 /// 等到刚投出去的稿件能被查询为止。

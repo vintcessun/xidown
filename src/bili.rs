@@ -237,7 +237,7 @@ fn upload_line(attempt: usize) -> (&'static str, Line) {
         ("bda2", line::bda2),
         ("alia", line::alia),
         ("tx", line::tx),
-        ("bda", line::bda),
+        ("txa", line::txa),
     ];
     let (name, make) = LINES[attempt % LINES.len()];
     (name, make())

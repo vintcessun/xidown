@@ -1,39 +1,53 @@
 [workspace]
 members = ["biliup"]
 
-# 统一整个 workspace 的依赖版本，避免同一个 crate 编译出多份
+# vendored 的 biliup 用 version.workspace = true
+[workspace.package]
+version = "1.2.4"
+
+# 统一整个 workspace 的依赖版本，避免同一个 crate 编译出多份。
+# 版本组合跟随上游 biliup（crates/biliup），另外补上本项目需要的 feature。
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9.34"
 serde_urlencoded = "0.7"
+bytes = "1.10.1"
+# biliup 使用 rand 0.8 的 thread_rng / distributions API，上游也还钉在 0.8
+rand = "0.8"
 tokio = { version = "1", features = ["full"] }
+futures = "0.3.31"
+async-trait = "0.1.87"
 tracing = "0.1"
-# biliup 使用 rand 0.8 的 thread_rng / distributions API，不要升级到 0.9
-rand = "0.8.5"
-url = "2.5"
+tracing-subscriber = { version = "0.3", features = ["local-time"] }
 thiserror = "2"
-bytes = "1.10"
-futures = "0.3"
-bon = "3"
-chrono = "0.4"
-regex = "1.11"
-async-trait = "0.1"
-reqwest = { version = "0.12", default-features = false }
-tracing-subscriber = "0.3"
+time = { version = "0.3", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+bon = "3.7.2"
+regex = "1.11.1"
+# 注意：0.13 里读 HTTP_PROXY 环境变量是可选 feature `system-proxy`，
+# 这里**刻意不启用**，从依赖层面保证不会走代理。
+# TLS 用 rustls（0.13 把 `rustls-tls` 改名成了 `rustls`），
+# default-features = false 是为了不把 native-tls 也拖进来。
+reqwest = { version = "0.13.4", default-features = false, features = [
+    "cookies", "form", "query",
+    "charset", "http2", "brotli", "gzip", "json", "stream",
+    "rustls",
+] }
+url = "2.5"
 anyhow = "1.0"
 log = "0.4"
 indicatif = "0.18"
 
 [package]
 name = "xidown"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
 indicatif = { workspace = true }
-reqwest = { workspace = true, features = ["charset", "http2", "macos-system-configuration", "brotli", "gzip", "json", "rustls-tls", "stream"] }
+reqwest = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }

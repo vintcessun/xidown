@@ -56,8 +56,26 @@ cargo run --release
 | `worker.rs` | 单部戏的下载 -> 上传 -> 投稿/追加 -> 记台账 |
 | `ledger.rs` | 本地上传台账 |
 
-`biliup/` 是 [biliup-rs](https://github.com/biliup/biliup-rs) 的 vendored 副本，
-本仓库是它的 workspace 根。
+## 关于 vendored 的 biliup
+
+`biliup/` 是 [biliup](https://github.com/biliup/biliup) 的 vendored 副本
+（1.2.4，上游提交 `051f5c7`，取自上游仓库的 `crates/biliup`），本仓库是它的 workspace 根。
+
+在上游之上打了 4 处本地补丁，都用 `// [xidown 本地补丁]` 标注，
+下次同步上游时 grep 这个标记就能找回来：
+
+1. `lib.rs` 的 `proxy_builder(None)` 改成 `.no_proxy()` —— 本项目要求全程直连
+2. `bilibili.rs` `archives()` 里那个直接构造的 `Client::builder()` 补 `.no_proxy()`
+3. `bilibili.rs` `archives()` 参数补 `ps=50` —— 不给的话服务端一页只返回 10 条
+4. `bilibili.rs` 翻页之间 sleep 300ms —— 防投稿中心 -702 限流
+
+另外顺手修了上游代码里 clippy 报的 4 处（同样带标注），保证 `-D warnings` 干净。
+
+有几个依赖被上游钉住升不动，是有原因的，不要硬升：
+`rand` 0.8（上游 FIXME 写明在等 `rsa` 0.10）、`md-5` 0.10（0.11 要 `digest` 0.11，
+会和 `rsa` 0.9 用的 0.10 冲突）、`base64` 0.22。
+
+
 
 ---------------------------
 

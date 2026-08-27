@@ -57,14 +57,15 @@ impl Parcel {
         };
 
         if video.title.is_none()
-            && let Some(filename) = self.video_file.filepath.file_stem().and_then(OsStr::to_str) {
-                // B站限制分P视频标题不能超过80字符，需要截断
-                video.title = Some(if filename.chars().count() >= 80 {
-                    Video::truncate_title(filename, 80)
-                } else {
-                    filename.to_string()
-                });
-            };
+            && let Some(filename) = self.video_file.filepath.file_stem().and_then(OsStr::to_str)
+        {
+            // B站限制分P视频标题不能超过80字符，需要截断
+            video.title = Some(if filename.chars().count() >= 80 {
+                Video::truncate_title(filename, 80)
+            } else {
+                filename.to_string()
+            });
+        };
         Ok(video)
     }
 }
@@ -164,15 +165,16 @@ impl Line {
             // 尝试解析JSON错误响应，检测限流错误（code: 601）
             if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&response_text)
                 && let Some(code) = error_json.get("code").and_then(|c| c.as_i64())
-                    && code == 601 {
-                        let message = error_json
-                            .get("message")
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("上传过快")
-                            .to_string();
-                        // 直接返回限流错误，让调用方决定如何处理
-                        return Err(RateLimit { code, message });
-                    }
+                && code == 601
+            {
+                let message = error_json
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("上传过快")
+                    .to_string();
+                // 直接返回限流错误，让调用方决定如何处理
+                return Err(RateLimit { code, message });
+            }
 
             return Err(Custom(format!(
                 "Failed to pre_upload from {}",
@@ -321,16 +323,6 @@ pub fn attx() -> Line {
     }
 }
 
-/// 百度云海外（Cloudflare）
-pub fn bda() -> Line {
-    Line {
-        os: Uploader::Upos,
-        query: "zone=cs&upcdn=bda&probe_version=20221109".into(),
-        probe_url: "//upos-cs-upcdnbda.bilivideo.com/OK".into(),
-        cost: 0,
-    }
-}
-
 /// 腾讯云EO海外
 pub fn txa() -> Line {
     Line {
@@ -347,6 +339,26 @@ pub fn alia() -> Line {
         os: Uploader::Upos,
         query: "zone=cs&upcdn=alia&probe_version=20221109".into(),
         probe_url: "//upos-cs-upcdnalia.bilivideo.com/OK".into(),
+        cost: 0,
+    }
+}
+
+/// B站自建
+pub fn estx() -> Line {
+    Line {
+        os: Uploader::Upos,
+        query: "probe_version=20250923&upcdn=estx&zone=cs".into(),
+        probe_url: "//e17962d5cstx.esheep.com/OK".into(),
+        cost: 0,
+    }
+}
+
+/// B站自建
+pub fn akbd() -> Line {
+    Line {
+        os: Uploader::Upos,
+        query: "probe_version=20250923&upcdn=akbd&zone=cs".into(),
+        probe_url: "//bb27c891csbd.aikobo.cn/OK".into(),
         cost: 0,
     }
 }

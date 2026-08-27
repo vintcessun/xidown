@@ -39,9 +39,10 @@ where
             Err(e) if retries > 0 => {
                 // 如果提供了 should_retry 条件，检查是否应该重试
                 if let Some(ref predicate) = should_retry
-                    && !predicate(&e) {
-                        break Err(e);
-                    }
+                    && !predicate(&e)
+                {
+                    break Err(e);
+                }
 
                 retries -= 1;
                 let jitter_factor =
@@ -72,10 +73,8 @@ impl ReqwestClientBuilderExt for reqwest::Client {
                 tracing::debug!("使用代理: {}", proxy.as_str());
                 Self::builder().proxy(reqwest::Proxy::all(proxy).unwrap())
             }
-            // 没显式指定代理时要**明确禁用**代理。
-            // reqwest 默认会去读 HTTP_PROXY/HTTPS_PROXY 环境变量，
-            // 于是上传流量被塞进本机代理，10 并发 10MB 的分片直接把它压垮
-            // （实测表现为整条线路所有分片 error sending request 或 HTTP 500）。
+            // [xidown 本地补丁] 没显式指定代理时要**明确禁用**代理。
+            // 本项目要求所有请求直连，不能继承 HTTP_PROXY/HTTPS_PROXY 环境变量。
             None => Self::builder().no_proxy(),
         }
     }

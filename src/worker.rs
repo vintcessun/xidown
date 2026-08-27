@@ -9,6 +9,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{info, warn};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use xmtv_api::VideoUrl;
@@ -20,6 +21,10 @@ pub struct Ctx {
     pub settings: Settings,
     pub ledger: Arc<Ledger>,
     pub multi: Arc<MultiProgress>,
+    /// 今天的新投稿额度是不是已经用光了(21566)。
+    /// 用光之后再传新剧目，传完也投不出去，只是白白浪费上行和磁盘，
+    /// 所以要在**下载之前**就跳过；往已有稿件追加分P 不受影响。
+    pub submit_blocked: Arc<AtomicBool>,
 }
 
 pub async fn run_task(ctx: Arc<Ctx>, task: Task) -> Result<()> {
@@ -65,6 +70,13 @@ async fn run_once(ctx: &Ctx, task: &Task, bv: &mut String) -> Result<()> {
 
     // 还没有稿件时，第一个分P 要用来新建稿件
     if bv.is_empty() {
+        // 额度已经用光就别再下载上传了——传完也投不出去
+        if ctx.submit_blocked.load(Ordering::Relaxed) {
+            return Err(anyhow!(
+                "{} 需要新投稿，但今天的投稿额度已用尽，跳过（下次运行会从台账续上）",
+                task.title
+            ));
+        }
         let first = parts
             .next()
             .ok_or_else(|| anyhow!("{} 没有需要上传的分P", task.title))?;
@@ -74,7 +86,17 @@ async fn run_once(ctx: &Ctx, task: &Task, bv: &mut String) -> Result<()> {
         // 否则跑一晚上失败几次磁盘就满了
         let submitted = bili::submit_new(&meta, vec![video]).await;
         cleanup(&path).await;
-        let new_bv = submitted?;
+        let new_bv = match submitted {
+            Ok(bv) => bv,
+            Err(e) => {
+                // 额度用尽：立刻置位，后面那些还没开始下载的剧目就不用白跑了
+                if bili::err_is_submit_quota(&e) {
+                    warn!("今天的新投稿额度已用尽，本轮不再新投稿（追加分P 不受影响）");
+                    ctx.submit_blocked.store(true, Ordering::Relaxed);
+                }
+                return Err(e);
+            }
+        };
         // 先记台账再等稿件可查询：万一等待期间进程挂了，
         // 下次运行也知道这一集已经传过了，不会重复上传
         record(ctx, task, first, &new_bv, &part_title).await?;

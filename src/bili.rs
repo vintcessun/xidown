@@ -363,6 +363,10 @@ pub async fn submit_new(meta: &ArchiveMeta, videos: Vec<Video>) -> Result<String
                 return Ok(bv);
             }
             Err(e) => {
+                // 投稿额度是按天给的，重试只会浪费时间，直接报上去让上层停手
+                if is_submit_quota_exhausted(&e.to_string()) {
+                    return Err(anyhow!("投稿数量已达每日上限(21566): {e}"));
+                }
                 let wait = match &e {
                     Kind::RateLimit { code, message } => {
                         warn!("投稿被限流(code {code}): {message}，等待 5 分钟后重试");
@@ -504,10 +508,25 @@ fn rate_limit_wait(e: &Kind) -> Option<Duration> {
         Kind::RateLimit { .. } => Some(Duration::from_secs(300)),
         _ => {
             let msg = e.to_string();
+            // 投稿数量上限(21566)不在此列：那是按天算的额度，等多久都没用
             (msg.contains("-702") || msg.contains("请求频率过高"))
                 .then(|| Duration::from_secs(120))
         }
     }
+}
+
+/// 是不是撞上了「投稿过于频繁」(code 21566)。
+///
+/// 这是 b 站按**天**给的新投稿额度，和 -702 那种几分钟就恢复的限流不是一回事：
+/// 在这一轮里再怎么等、再怎么重试都不会好。而投稿是上传之后的最后一步，
+/// 硬重试的代价是把刚传上去的几百兆白白丢掉。
+pub fn is_submit_quota_exhausted(msg: &str) -> bool {
+    msg.contains("21566") || msg.contains("投稿过于频繁")
+}
+
+/// 判断一个 anyhow 错误链里是不是有投稿额度用尽。
+pub fn err_is_submit_quota(e: &anyhow::Error) -> bool {
+    is_submit_quota_exhausted(&format!("{e:#}"))
 }
 
 /// 被限流时最多总共等这么久。b 站投稿中心的 -702 实测能持续十几分钟，

@@ -76,6 +76,7 @@ async fn main() -> Result<()> {
         settings: settings.clone(),
         ledger: ledger.clone(),
         multi: MULTI_PROGRESS.clone(),
+        submit_blocked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
 
     // 旧版是 threadpool 里给每个任务单独 build 一个多线程 tokio runtime，
